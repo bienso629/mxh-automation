@@ -1,0 +1,77 @@
+name: Build Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows:
+    name: Build Windows EXE & Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Verify Flutter & Environment
+        run: |
+          flutter doctor -v
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Get Dependencies
+        run: |
+          flutter pub get
+
+      - name: Build Flutter Windows Application
+        run: |
+          flutter build windows --release
+
+      - name: Package Portable ZIP
+        shell: pwsh
+        run: |
+          $distDir = "dist-flutter"
+          if (!(Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force }
+          Compress-Archive -Path 'build\windows\x64\runner\Release\*' -DestinationPath "$distDir\MXH-Tu-Dong-Portable-Windows-x64.zip" -Force
+          Write-Host "Portable ZIP created at: $distDir\MXH-Tu-Dong-Portable-Windows-x64.zip"
+
+      - name: Compile Inno Setup Installer
+        shell: pwsh
+        run: |
+          $isccCandidates = @(
+            (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+          if ($iscc) {
+            Write-Host "Compiling setup installer with: $iscc"
+            & "$iscc" "scripts\installer_windows.iss"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup compilation failed with exit code $LASTEXITCODE"
+            }
+            Write-Host "Setup installer created at dist-flutter\MXH-Tu-Dong-Setup-x64.exe"
+          } else {
+            Write-Warning "Inno Setup compiler (ISCC.exe) not found!"
+          }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MXH-Tu-Dong-Windows-Release
+          path: |
+            dist-flutter/*.zip
+            dist-flutter/*.exe
+          retention-days: 14

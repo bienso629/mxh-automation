@@ -1,0 +1,27 @@
+stages:
+  - build
+
+build_windows:
+  stage: build
+  tags:
+    - saas-windows-medium-amd64 # Hoặc shared Windows runner trên GitLab SaaS
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+      changes:
+        - plugins/agent-mxh-auto/**/*
+    - if: '$CI_PIPELINE_SOURCE == "web"' # Cho phép bấm Run Pipeline bằng tay trên web
+  before_script:
+    - choco install flutter innosetup -y --no-progress
+    - refreshenv
+  script:
+    - cd plugins/agent-mxh-auto
+    - flutter doctor -v
+    - flutter pub get
+    - flutter build windows --release
+    - call scripts\build_windows.bat
+  artifacts:
+    name: "MXH-Tu-Dong-Windows"
+    paths:
+      - dist-flutter/*.zip
+      - dist-flutter/*.exe
+    expire_in: 2 weeks
