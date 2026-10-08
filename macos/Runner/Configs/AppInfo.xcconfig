@@ -10,5 +10,8 @@ PRODUCT_NAME = agent_mxh_auto
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = agent.mxh.auto
 
+// The Apple Developer Team ID
+DEVELOPMENT_TEAM = 7Q9KE7THG2
+
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 com.tadu. All rights reserved.
