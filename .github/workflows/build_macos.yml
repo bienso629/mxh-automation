@@ -83,6 +83,9 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--keychain $RUNNER_TEMP/build.keychain"
 
       - name: Export and Package for TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           mkdir -p dist-macos
           cat > ExportOptions.plist << 'PLIST'
@@ -91,9 +94,9 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>destination</key>
-              <string>upload</string>
+              <string>export</string>
               <key>method</key>
-              <string>app-store</string>
+              <string>app-store-connect</string>
               <key>signingStyle</key>
               <string>manual</string>
               <key>signingCertificate</key>
@@ -107,12 +110,14 @@ jobs:
           </plist>
           PLIST
 
-          # Export package from archive
+          # Export package from archive with App Store Connect API authentication
           xcodebuild -exportArchive \
             -archivePath build/macos/Runner.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
             -exportPath dist-macos \
-            -allowProvisioningUpdates
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID"
 
       - name: Upload to TestFlight via App Store Connect
         env:
