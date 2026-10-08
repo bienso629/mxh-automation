@@ -1,2 +1,8 @@
 #include "../../Flutter/Flutter-Release.xcconfig"
 #include "Warnings.xcconfig"
+
+DEVELOPMENT_TEAM = 7Q9KE7THG2
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Apple Distribution: Nguyen Yen (7Q9KE7THG2)
+PROVISIONING_PROFILE_SPECIFIER = Agent MXH Auto
+

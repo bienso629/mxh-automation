@@ -78,9 +78,6 @@ jobs:
             -configuration Release \
             -archivePath build/macos/Runner.xcarchive \
             archive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution: Nguyen Yen (7Q9KE7THG2)" \
-            PROVISIONING_PROFILE="01fcf3ec-5684-433f-a48e-2596cf329206" \
             OTHER_CODE_SIGN_FLAGS="--keychain $RUNNER_TEMP/build.keychain"
 
       - name: Export and Package for TestFlight
