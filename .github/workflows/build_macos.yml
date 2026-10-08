@@ -69,35 +69,64 @@ jobs:
         run: |
           flutter pub get
 
-      - name: Build macOS Release
+      - name: Build macOS Archive
         run: |
-          flutter build macos --release
+          flutter build macos --release --config-only || true
+          xcodebuild -workspace macos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath build/macos/Runner.xcarchive \
+            archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution: Nguyen Yen (7Q9KE7THG2)" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $RUNNER_TEMP/build.keychain"
 
-      - name: Package PKG Installer for App Store / TestFlight
-        env:
-          TEAM_ID: "7Q9KE7THG2"
+      - name: Export and Package for TestFlight
         run: |
-          APP_PATH="build/macos/Build/Products/Release/agent_mxh_auto.app"
           mkdir -p dist-macos
+          cat > ExportOptions.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>destination</key>
+              <string>upload</string>
+              <key>method</key>
+              <string>app-store</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>agent.mxh.auto</key>
+                  <string>Agent_MXH_Auto</string>
+              </dict>
+          </dict>
+          </plist>
+          PLIST
 
-          # Re-sign with entitlements and temporary keychain
-          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
-          CERT_NAME=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -n 1 | awk -F '"' '{print $2}')
-          echo "Using signing certificate: $CERT_NAME"
-
-          codesign --force --deep --options runtime --entitlements macos/Runner/Release.entitlements --sign "$CERT_NAME" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
-
-          # Build .pkg bundle for TestFlight/App Store submission
-          productbuild --component "$APP_PATH" /Applications --sign "$CERT_NAME" --keychain "$KEYCHAIN_PATH" dist-macos/agent_mxh_auto.pkg
-          echo "Created installer package: dist-macos/agent_mxh_auto.pkg"
+          # Export package from archive
+          xcodebuild -exportArchive \
+            -archivePath build/macos/Runner.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath dist-macos \
+            -allowProvisioningUpdates
 
       - name: Upload to TestFlight via App Store Connect
         env:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
-          echo "Uploading package to App Store Connect / TestFlight..."
-          xcrun altool --upload-app -f dist-macos/agent_mxh_auto.pkg --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress
+          PKG_FILE=$(find dist-macos -name "*.pkg" | head -n 1)
+          if [ -z "$PKG_FILE" ]; then
+            echo "No .pkg found, searching for .ipa or .app bundle..."
+            find dist-macos
+            PKG_FILE="dist-macos/agent_mxh_auto.pkg"
+          fi
+          echo "Found package to upload: $PKG_FILE"
+          xcrun altool --upload-app -f "$PKG_FILE" --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress
 
       - name: Upload Artifacts
         if: always()
