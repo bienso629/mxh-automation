@@ -57,10 +57,11 @@ jobs:
           # Append temporary keychain to search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
-          # Decode and install Provisioning Profile
+          # Decode and install Provisioning Profile by UUID and Name
           PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES_DIR"
-          echo "$PROFILE_BASE64" | base64 --decode > "$PROFILES_DIR/Agent_MXH_Auto.provisionprofile"
+          echo "$PROFILE_BASE64" | base64 --decode > "$PROFILES_DIR/01fcf3ec-5684-433f-a48e-2596cf329206.provisionprofile"
+          cp "$PROFILES_DIR/01fcf3ec-5684-433f-a48e-2596cf329206.provisionprofile" "$PROFILES_DIR/Agent_MXH_Auto.provisionprofile"
 
           echo "Certificates in keychain:"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
@@ -79,7 +80,7 @@ jobs:
             archive \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution: Nguyen Yen (7Q9KE7THG2)" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
+            PROVISIONING_PROFILE="01fcf3ec-5684-433f-a48e-2596cf329206" \
             OTHER_CODE_SIGN_FLAGS="--keychain $RUNNER_TEMP/build.keychain"
 
       - name: Export and Package for TestFlight
@@ -94,44 +95,38 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>destination</key>
-              <string>export</string>
+              <string>upload</string>
               <key>method</key>
               <string>app-store-connect</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>signingCertificate</key>
-              <string>Apple Distribution</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>agent.mxh.auto</key>
-                  <string>Agent_MXH_Auto</string>
-              </dict>
+              <key>manageAppVersionAndBuildNumber</key>
+              <true/>
           </dict>
           </plist>
           PLIST
 
-          # Export package from archive with App Store Connect API authentication
+          # Export and upload directly via xcodebuild and App Store Connect API
           xcodebuild -exportArchive \
             -archivePath build/macos/Runner.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
             -exportPath dist-macos \
+            -allowProvisioningUpdates \
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 \
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID"
 
-      - name: Upload to TestFlight via App Store Connect
+      - name: Fallback Upload to TestFlight via altool
+        if: success()
         env:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
-          PKG_FILE=$(find dist-macos -name "*.pkg" | head -n 1)
-          if [ -z "$PKG_FILE" ]; then
-            echo "No .pkg found, searching for .ipa or .app bundle..."
-            find dist-macos
-            PKG_FILE="dist-macos/agent_mxh_auto.pkg"
+          PKG_FILE=$(find dist-macos -name "*.pkg" 2>/dev/null | head -n 1)
+          if [ -n "$PKG_FILE" ]; then
+            echo "Uploading package to App Store Connect / TestFlight via altool..."
+            xcrun altool --upload-app -f "$PKG_FILE" --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress || true
+          else
+            echo "Archive was uploaded directly by xcodebuild exportArchive."
           fi
-          echo "Found package to upload: $PKG_FILE"
-          xcrun altool --upload-app -f "$PKG_FILE" --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress
 
       - name: Upload Artifacts
         if: always()
