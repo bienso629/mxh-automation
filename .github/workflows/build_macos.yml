@@ -80,50 +80,35 @@ jobs:
             archive \
             OTHER_CODE_SIGN_FLAGS="--keychain $RUNNER_TEMP/build.keychain"
 
-      - name: Export and Package for TestFlight
-        env:
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - name: Package PKG Installer from Archive
         run: |
           mkdir -p dist-macos
-          cat > ExportOptions.plist << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>destination</key>
-              <string>upload</string>
-              <key>method</key>
-              <string>app-store-connect</string>
-              <key>manageAppVersionAndBuildNumber</key>
-              <true/>
-          </dict>
-          </plist>
-          PLIST
+          APP_PATH="build/macos/Runner.xcarchive/Products/Applications/agent_mxh_auto.app"
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          
+          # Verify the archived app exists
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Searching for archived app..."
+            APP_PATH=$(find build/macos/Runner.xcarchive -name "*.app" | head -n 1)
+          fi
+          echo "Found app at: $APP_PATH"
 
-          # Export and upload directly via xcodebuild and App Store Connect API
-          xcodebuild -exportArchive \
-            -archivePath build/macos/Runner.xcarchive \
-            -exportOptionsPlist ExportOptions.plist \
-            -exportPath dist-macos \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 \
-            -authenticationKeyID "$KEY_ID" \
-            -authenticationKeyIssuerID "$ISSUER_ID"
+          # Use productbuild to create valid App Store package directly from the properly signed archive
+          productbuild --component "$APP_PATH" /Applications dist-macos/agent_mxh_auto.pkg
+          echo "Created installer package: dist-macos/agent_mxh_auto.pkg"
 
-      - name: Fallback Upload to TestFlight via altool
-        if: success()
+      - name: Upload to TestFlight via altool
         env:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
-          PKG_FILE=$(find dist-macos -name "*.pkg" 2>/dev/null | head -n 1)
-          if [ -n "$PKG_FILE" ]; then
-            echo "Uploading package to App Store Connect / TestFlight via altool..."
-            xcrun altool --upload-app -f "$PKG_FILE" --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress || true
-          else
-            echo "Archive was uploaded directly by xcodebuild exportArchive."
-          fi
+          echo "Uploading package to App Store Connect / TestFlight..."
+          xcrun altool --upload-app \
+            -f dist-macos/agent_mxh_auto.pkg \
+            --type macos \
+            --apiKey "$KEY_ID" \
+            --apiIssuer "$ISSUER_ID" \
+            --show-progress
 
       - name: Upload Artifacts
         if: always()
