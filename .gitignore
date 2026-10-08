@@ -53,3 +53,12 @@ app.*.symbols
 
 # Obfuscation related
 app.*.map.json
+
+# Local keys, certificates and credentials
+*.key
+*.csr
+*.certSigningRequest
+*.p12
+docs/
+dist-flutter/
+dist-macos/

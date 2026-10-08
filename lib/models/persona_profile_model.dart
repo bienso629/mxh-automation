@@ -11,6 +11,7 @@ class PersonaProfile {
   final String? avdName;
   final String deviceType; // 'mobile' | 'tablet'
   final String? agentInfo; // Thông tin Agent / System role của nhân vật này
+  final String? email; // Địa chỉ email của nhân vật
   final String? phoneNumber; // Số điện thoại gắn với nhân vật (từ SMSPool hoặc nhập tay)
   final bool autoSyncPhoneToDevice; // Switch tự động gắn số điện thoại vào thiết bị ngoại vi
   final String? smsOrderId; // Mã đơn hàng SMSPool (nếu có thuê qua SMSPool)
@@ -28,6 +29,7 @@ class PersonaProfile {
     this.avdName,
     this.deviceType = 'mobile',
     this.agentInfo,
+    this.email,
     this.phoneNumber,
     this.autoSyncPhoneToDevice = false,
     this.smsOrderId,
@@ -46,12 +48,14 @@ class PersonaProfile {
     String? avdName,
     String? deviceType,
     String? agentInfo,
+    String? email,
     String? phoneNumber,
     bool? autoSyncPhoneToDevice,
     String? smsOrderId,
     bool clearSmsOrderId = false,
     bool clearAvdName = false,
     bool clearPhoneNumber = false,
+    bool clearEmail = false,
     bool clearAvatarUrl = false,
   }) {
     return PersonaProfile(
@@ -67,6 +71,7 @@ class PersonaProfile {
       avdName: clearAvdName ? null : (avdName ?? this.avdName),
       deviceType: deviceType ?? this.deviceType,
       agentInfo: agentInfo ?? this.agentInfo,
+      email: clearEmail ? null : (email ?? this.email),
       phoneNumber: clearPhoneNumber ? null : (phoneNumber ?? this.phoneNumber),
       autoSyncPhoneToDevice: autoSyncPhoneToDevice ?? this.autoSyncPhoneToDevice,
       smsOrderId: clearSmsOrderId ? null : (smsOrderId ?? this.smsOrderId),
@@ -86,6 +91,7 @@ class PersonaProfile {
     'avd_name': avdName,
     'device_type': deviceType,
     'agent_info': agentInfo,
+    'email': email,
     'phone_number': phoneNumber,
     'auto_sync_phone_to_device': autoSyncPhoneToDevice ? 1 : 0,
     'sms_order_id': smsOrderId,
@@ -104,6 +110,7 @@ class PersonaProfile {
     avdName: json['avd_name']?.toString(),
     deviceType: json['device_type']?.toString() ?? 'mobile',
     agentInfo: json['agent_info']?.toString(),
+    email: json['email']?.toString(),
     phoneNumber: json['phone_number']?.toString(),
     autoSyncPhoneToDevice: json['auto_sync_phone_to_device'] == 1 || json['auto_sync_phone_to_device'] == true,
     smsOrderId: json['sms_order_id']?.toString(),

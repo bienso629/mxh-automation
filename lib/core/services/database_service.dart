@@ -152,6 +152,9 @@ class DatabaseService {
       await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN agent_info TEXT');
     } catch (_) {}
     try {
+      await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN email TEXT');
+    } catch (_) {}
+    try {
       await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN phone_number TEXT');
     } catch (_) {}
     try {
@@ -578,6 +581,9 @@ class DatabaseService {
             agentInfo: r['agent_info'] != null && r['agent_info'].toString().isNotEmpty
                 ? _enc.decryptValue(r['agent_info'].toString())
                 : null,
+            email: r['email'] != null && r['email'].toString().isNotEmpty
+                ? _enc.decryptValue(r['email'].toString())
+                : null,
             phoneNumber: r['phone_number'] != null && r['phone_number'].toString().isNotEmpty
                 ? _enc.decryptValue(r['phone_number'].toString())
                 : null,
@@ -614,6 +620,9 @@ class DatabaseService {
         'device_type': profile.deviceType,
         'agent_info': profile.agentInfo != null && profile.agentInfo!.isNotEmpty
             ? _enc.encryptValue(profile.agentInfo!)
+            : null,
+        'email': profile.email != null && profile.email!.isNotEmpty
+            ? _enc.encryptValue(profile.email!)
             : null,
         'phone_number': profile.phoneNumber != null && profile.phoneNumber!.isNotEmpty
             ? _enc.encryptValue(profile.phoneNumber!)
@@ -659,6 +668,9 @@ class DatabaseService {
             'device_type': p.deviceType,
             'agent_info': p.agentInfo != null && p.agentInfo!.isNotEmpty
                 ? _enc.encryptValue(p.agentInfo!)
+                : null,
+            'email': p.email != null && p.email!.isNotEmpty
+                ? _enc.encryptValue(p.email!)
                 : null,
             'phone_number': p.phoneNumber != null && p.phoneNumber!.isNotEmpty
                 ? _enc.encryptValue(p.phoneNumber!)

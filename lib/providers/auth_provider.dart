@@ -5,12 +5,14 @@ import '../core/services/database_service.dart';
 import '../core/services/forum_auth_service.dart';
 import '../core/services/local_config_service.dart';
 import '../core/services/multi_account_service.dart';
+import '../core/services/persona_service.dart';
 import '../core/services/storage_service.dart';
 
 class AuthProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
   final DatabaseService _db = DatabaseService();
   final LocalConfigService _localConfig = LocalConfigService();
+  final PersonaService _persona = PersonaService();
   final MultiAccountService _multiAccount = MultiAccountService();
   final ForumAuthService _forumAuth = ForumAuthService();
 
@@ -131,6 +133,7 @@ class AuthProvider extends ChangeNotifier {
         final userKey = await _storage.getUserKey();
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
+        _persona.switchUser(userKey);
       } else {
         _isAuthenticated = false;
       }
@@ -246,6 +249,7 @@ class AuthProvider extends ChangeNotifier {
         final userKey = StorageService.sanitizeUserKey(cleanEmail);
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
+        _persona.switchUser(userKey);
 
         await refreshAccountsList();
         notifyListeners();
@@ -293,6 +297,7 @@ class AuthProvider extends ChangeNotifier {
         final userKey = StorageService.sanitizeUserKey(email);
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
+        _persona.switchUser(userKey);
 
         await refreshAccountsList();
         _isLoading = false;
@@ -319,6 +324,7 @@ class AuthProvider extends ChangeNotifier {
     final userKey = StorageService.sanitizeUserKey(_userEmail);
     await _db.switchUser(userKey);
     await _localConfig.switchUser(userKey);
+    _persona.switchUser(userKey);
     _errorMessage = null;
     notifyListeners();
   }
@@ -333,6 +339,7 @@ class AuthProvider extends ChangeNotifier {
     _errorMessage = null;
     await _db.switchUser('');
     await _localConfig.switchUser('');
+    _persona.switchUser('');
     await refreshAccountsList();
     notifyListeners();
   }

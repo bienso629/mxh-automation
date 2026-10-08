@@ -1,0 +1,109 @@
+name: Build & Upload macOS TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-and-upload-macos:
+    name: Build & Deploy macOS to TestFlight
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Verify Flutter & Xcode Environment
+        run: |
+          flutter doctor -v
+          xcodebuild -version
+
+      - name: Setup App Store Connect API Key
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          PRIVATE_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$PRIVATE_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+
+      - name: Install Apple Certificate and Provisioning Profile
+        env:
+          CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          PROFILE_BASE64: ${{ secrets.MACOS_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PWD: "temporary_ci_keychain_password"
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          # Decode and import Certificate
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -A -T /usr/bin/codesign -T /usr/bin/productsign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          # Append temporary keychain to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # Decode and install Provisioning Profile
+          PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES_DIR"
+          echo "$PROFILE_BASE64" | base64 --decode > "$PROFILES_DIR/Agent_MXH_Auto.provisionprofile"
+
+          echo "Certificates in keychain:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Install Dependencies
+        run: |
+          flutter pub get
+
+      - name: Build macOS Release
+        run: |
+          flutter build macos --release
+
+      - name: Package PKG Installer for App Store / TestFlight
+        env:
+          TEAM_ID: "7Q9KE7THG2"
+        run: |
+          APP_PATH="build/macos/Build/Products/Release/agent_mxh_auto.app"
+          mkdir -p dist-macos
+
+          # Re-sign with entitlements and temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          CERT_NAME=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -n 1 | awk -F '"' '{print $2}')
+          echo "Using signing certificate: $CERT_NAME"
+
+          codesign --force --deep --options runtime --entitlements macos/Runner/Release.entitlements --sign "$CERT_NAME" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
+
+          # Build .pkg bundle for TestFlight/App Store submission
+          productbuild --component "$APP_PATH" /Applications --sign "$CERT_NAME" --keychain "$KEYCHAIN_PATH" dist-macos/agent_mxh_auto.pkg
+          echo "Created installer package: dist-macos/agent_mxh_auto.pkg"
+
+      - name: Upload to TestFlight via App Store Connect
+        env:
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          echo "Uploading package to App Store Connect / TestFlight..."
+          xcrun altool --upload-app -f dist-macos/agent_mxh_auto.pkg --type macos --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" --show-progress
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-TestFlight-Package
+          path: |
+            dist-macos/*.pkg
+          retention-days: 7

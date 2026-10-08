@@ -44,7 +44,14 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
 
 4. TẬP TRUNG TÁC VỤ TỰ ĐỘNG HÓA MXH:
    - Sử dụng các công cụ nội bộ để tương tác trực tiếp với trình duyệt cục bộ.
-   - BẮT BUỘC: Sau khi gọi hoặc thực thi bất kỳ công cụ (tool/function) nào, bạn PHẢI luôn luôn có câu trả lời bằng văn bản gửi cho người dùng để trình bày chi tiết kết quả, giải thích các bước đã thực hiện hoặc đưa ra phân tích tiếp theo. Tuyệt đối KHÔNG được kết thúc cuộc hội thoại trong im lặng hoặc trả về nội dung rỗng.''';
+   - BẮT BUỘC: Sau khi gọi hoặc thực thi bất kỳ công cụ (tool/function) nào, bạn PHẢI luôn luôn có câu trả lời bằng văn bản gửi cho người dùng để trình bày chi tiết kết quả, giải thích các bước đã thực hiện hoặc đưa ra phân tích tiếp theo. Tuyệt đối KHÔNG được kết thúc cuộc hội thoại trong im lặng hoặc trả về nội dung rỗng.
+
+5. QUY TẮC ĐỌC BÀI BÁO & XEM VIDEO TRÊN WEBSITE (AGENT RULES):
+   - Khi có yêu cầu đọc bài báo, xem tin tức hoặc xem video trên website bất kỳ:
+     + Luôn khởi chạy trình duyệt bằng profile độc lập theo IP của nhân vật (`open_profile_browser`).
+     + Quy trình đọc bài báo: Đợi trang tải xong, đóng pop-up quảng cáo nếu có, cuộn trang từng đoạn từ tốn mô phỏng tốc độ đọc thật của con người (dwell time 3-8 giây mỗi đoạn), cuộn tối thiểu 70% chiều dài trang; trích xuất tiêu đề chính và các luận điểm cốt lõi.
+     + Quy trình xem video: Tìm phần tử video hoặc iframe nhúng, cuộn trình phát vào giữa màn hình, bấm Play, xem tối thiểu 45 giây đến 2 phút (hoặc 80% thời lượng với video ngắn), không tắt trình duyệt ngay sau khi vừa mở; đọc hiểu tiêu đề, mô tả và nội dung video.
+     + Luôn giữ tính nhất quán theo đúng giọng văn, độ tuổi và tiểu sử của nhân vật khi tóm tắt hoặc viết bình luận tương tác.''';
 
   StreamSubscription<String> streamChatMessage({
     required String sessionId,

@@ -952,15 +952,34 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final totalSlots = totalWeeks * 7;
     final today = DateTime.now();
 
-    return GridView.builder(
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 7,
-        crossAxisSpacing: 6,
-        mainAxisSpacing: 6,
-        childAspectRatio: 0.88,
-      ),
-      itemCount: totalSlots,
-      itemBuilder: (context, index) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const double crossAxisSpacing = 6.0;
+        const double mainAxisSpacing = 6.0;
+        const int crossAxisCount = 7;
+
+        final availableWidth = constraints.maxWidth;
+        final availableHeight = constraints.maxHeight;
+
+        // Tính chiều rộng thực của mỗi cột (7 ngày)
+        final cellWidth = (availableWidth - (crossAxisSpacing * (crossAxisCount - 1))) / crossAxisCount;
+
+        // Tính chiều cao thực của mỗi hàng (totalWeeks hàng) để vừa khít 100% không cuộn
+        final totalMainSpacing = mainAxisSpacing * (totalWeeks - 1);
+        final rawCellHeight = (availableHeight - totalMainSpacing) / totalWeeks;
+        final cellHeight = rawCellHeight > 0 ? rawCellHeight : 1.0;
+        final dynamicAspectRatio = (cellWidth > 0 && cellHeight > 0) ? (cellWidth / cellHeight) : 1.0;
+
+        return GridView.builder(
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: crossAxisSpacing,
+            mainAxisSpacing: mainAxisSpacing,
+            childAspectRatio: dynamicAspectRatio,
+          ),
+          itemCount: totalSlots,
+          itemBuilder: (context, index) {
         final dayOffset = index - (startingWeekday - 1);
         if (dayOffset < 0 || dayOffset >= daysInMonth) {
           return Container(
@@ -1108,6 +1127,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ),
           ),
         );
+      },
+    );
       },
     );
   }

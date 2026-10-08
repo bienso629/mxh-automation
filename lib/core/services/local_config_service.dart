@@ -337,6 +337,23 @@ class LocalConfigService {
       if (!hasActive && serversList.isNotEmpty) {
         serversList[0] = serversList[0].copyWith(isSelected: true);
       }
+
+      // Đảm bảo Server 100 (103.74.116.119) luôn xuất hiện trong danh sách máy chủ
+      if (!serversList.any((s) => s.serverIp == '103.74.116.119')) {
+        serversList.add(ServerModel(
+          id: 'srv_server_100',
+          name: 'Server 100',
+          serverIp: '103.74.116.119',
+          sshPort: 7878,
+          sshUser: 'root',
+          sshPass: 'Tadu#123!@#',
+          aiModel: 'glm-5.3',
+          remoteWorkDir: '/root',
+          apiPort: 8000,
+          isSelected: false,
+          status: 'online',
+        ));
+      }
     }
 
     // 2. If serversList is still empty, populate from root config

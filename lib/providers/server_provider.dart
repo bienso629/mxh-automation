@@ -4,10 +4,13 @@ import '../core/services/native_ssh_service.dart';
 import '../core/services/storage_service.dart';
 import '../models/server_model.dart';
 
+import '../core/services/persona_service.dart';
+
 class ServerProvider extends ChangeNotifier {
   final ApiService _api = ApiService();
   final StorageService _storage = StorageService();
   final NativeSshService _ssh = NativeSshService();
+  final PersonaService _persona = PersonaService();
 
   List<ServerModel> _servers = [];
   ServerModel? _selectedServer;
@@ -29,13 +32,32 @@ class ServerProvider extends ChangeNotifier {
   Map<String, List<String>> get serverIpsMap => _serverIpsMap;
 
   List<String> getIpsForServer(ServerModel server) {
+    final Set<String> ipSet = {};
+
     if (_serverIpsMap.containsKey(server.id)) {
-      return _serverIpsMap[server.id]!;
+      ipSet.addAll(_serverIpsMap[server.id]!);
+    } else if (server.serverIp.isNotEmpty) {
+      ipSet.add(server.serverIp);
     }
-    if (server.serverIp.isNotEmpty) {
-      return [server.serverIp];
+
+    // Kết hợp các IP của nhân vật (personas) thuộc dải IP của server này
+    final allPersonas = _persona.allPersonas;
+    final serverPrefix = server.serverIp.contains('.')
+        ? server.serverIp.substring(0, server.serverIp.lastIndexOf('.'))
+        : '';
+
+    for (final personaIp in allPersonas.keys) {
+      if (personaIp == server.serverIp) {
+        ipSet.add(personaIp);
+      } else if (serverPrefix.isNotEmpty && personaIp.startsWith('$serverPrefix.')) {
+        ipSet.add(personaIp);
+      } else if (server.serverIp.startsWith('103.74.116.') && personaIp.startsWith('103.74.117.')) {
+        // Cùng cụm IP dải Server 100
+        ipSet.add(personaIp);
+      }
     }
-    return [];
+
+    return ipSet.toList();
   }
 
   bool isLoadingIps(String serverId) => _loadingIpsServerIds.contains(serverId);
@@ -134,6 +156,9 @@ class ServerProvider extends ChangeNotifier {
         _selectedServer = null;
       }
       await loadGlobalConfig();
+      try {
+        await _persona.loadSavedPersonas();
+      } catch (_) {}
       // Asynchronously fetch pointing IPs for all servers
       _fetchServerIpsForAll();
     } catch (e) {

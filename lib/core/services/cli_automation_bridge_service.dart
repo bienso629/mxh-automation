@@ -155,15 +155,33 @@ def _start_socks5_for_ip(ip):
     if not server or not server.get("server_ip") or not server.get("ssh_pass"):
         return None
 
-    # Tìm cổng local trống
     import socket
+    tmp_dir = os.path.join(DATA_DIR, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    meta_file = os.path.join(tmp_dir, f"socks_{ip.replace('.', '_')}.json")
+
+    # Tái sử dụng hầm SSH SOCKS5 nếu đang còn sống và lắng nghe
+    if os.path.exists(meta_file):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            pid = meta.get("pid")
+            lport = meta.get("local_port")
+            if pid and os.path.exists(f"/proc/{pid}") and lport:
+                ts = socket.socket()
+                ts.settimeout(0.3)
+                ts.connect(("127.0.0.1", lport))
+                ts.close()
+                return f"socks5://127.0.0.1:{lport}"
+        except Exception:
+            pass
+
+    # Tìm cổng local trống
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     local_port = s.getsockname()[1]
     s.close()
 
-    tmp_dir = os.path.join(DATA_DIR, "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
     askpass_file = os.path.join(tmp_dir, f"ssh_askpass_{ip.replace('.', '_')}_{local_port}.sh")
     escaped_pass = server["ssh_pass"].replace("\\\\", "\\\\\\\\").replace('"', '\\\\"').replace("\$", "\\\\\$")
     with open(askpass_file, "w", encoding="utf-8") as f:
@@ -712,7 +730,8 @@ if __name__ == "__main__":
     if (personas.isNotEmpty) {
       buffer.writeln('DANH SÁCH TOÀN BỘ NHÂN VẬT & IP TRÊN HỆ THỐNG:');
       for (final p in personas.values) {
-        buffer.writeln('- IP: ${p.ip} | Tên: ${p.name} | Giới tính: ${p.gender} | Tuổi: ${p.age}');
+        final emailStr = (p.email != null && p.email!.isNotEmpty) ? ' | Email: ${p.email}' : '';
+        buffer.writeln('- IP: ${p.ip} | Tên: ${p.name} | Giới tính: ${p.gender} | Tuổi: ${p.age}$emailStr');
         if (p.bio.isNotEmpty) {
           buffer.writeln('  Tiểu sử: ${p.bio}');
         }
@@ -739,6 +758,11 @@ if __name__ == "__main__":
     buffer.writeln('- BẮT BUỘC phải thực thi lệnh terminal thực tế để mở cửa sổ trình duyệt trên màn hình người dùng.');
     buffer.writeln('- TUYỆT ĐỐI KHÔNG giải thích vòng vo về headless mode hay khuyên người dùng tự mở lệnh.');
     buffer.writeln('- Sau khi thực thi lệnh, hãy báo cáo chi tiết danh sách tất cả các nhân vật/IP đã được mở trình duyệt thành công.');
+    buffer.writeln('');
+    buffer.writeln('QUY TẮC ĐỌC BÀI BÁO & XEM VIDEO TRÊN WEBSITE (AGENT RULES):');
+    buffer.writeln('1. Khi đọc bài báo: Mở bằng profile của nhân vật, đóng quảng cáo pop-up, cuộn đọc từng đoạn với độ trễ tự nhiên (3-8 giây mỗi đoạn), cuộn tối thiểu 70% trang, trích xuất luận điểm chính.');
+    buffer.writeln('2. Khi xem video: Định vị phần tử video/iframe, cuộn vào giữa khung nhìn, kích hoạt phát, duy trì thời gian xem tối thiểu (45 giây - 2 phút hoặc 80% video ngắn), nắm bắt tiêu đề/phụ đề để hiểu nội dung.');
+    buffer.writeln('3. Khi tóm tắt hoặc viết bình luận tương tác: Bắt buộc bám sát tính cách, lứa tuổi và tiểu sử của đúng nhân vật được giao.');
 
     return buffer.toString();
   }

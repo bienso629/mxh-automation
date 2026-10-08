@@ -2,64 +2,193 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-MOBILE_DIR="$ROOT_DIR/mobile"
-DIST_DIR="$ROOT_DIR/dist-flutter"
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DIST_DIR="$APP_DIR/dist-flutter"
 
-echo "=== [1/4] Building Flutter Linux Release ==="
-cd "$MOBILE_DIR"
+echo "========================================================"
+echo " TAO BAN CAI DAT UBUNTU/DEBIAN CHO MXH TU DONG"
+echo "========================================================"
+
+cd "$APP_DIR"
+
+echo "[1/4] Dang bien dich Flutter Linux Release..."
 flutter build linux --release
 
-echo "=== [2/4] Preparing Debian package structure ==="
-PKG_NAME="tadu-cloud-ai-agent-flutter_1.3.0_amd64"
+echo "[2/4] Chuan bi cau truc goi cai dat .deb..."
+PKG_NAME="mxh-tu-dong_1.0.0_amd64"
 PKG_DIR="$DIST_DIR/$PKG_NAME"
 
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN"
-mkdir -p "$PKG_DIR/opt/tadu-cloud-ai-agent"
+mkdir -p "$PKG_DIR/opt/mxh-tu-dong"
 mkdir -p "$PKG_DIR/usr/bin"
 mkdir -p "$PKG_DIR/usr/share/applications"
-mkdir -p "$PKG_DIR/usr/share/icons/hicolor/512x512/apps"
 
 # Copy Linux release bundle
-cp -r "$MOBILE_DIR/build/linux/x64/release/bundle/"* "$PKG_DIR/opt/tadu-cloud-ai-agent/"
+cp -r "$APP_DIR/build/linux/x64/release/bundle/"* "$PKG_DIR/opt/mxh-tu-dong/"
 
-# Symlink
-ln -sf /opt/tadu-cloud-ai-agent/agent_mxh_auto "$PKG_DIR/usr/bin/tadu-cloud-ai-agent"
+# Tao script khoi chay trong /usr/bin de chay truc tiep tu command line
+cat << 'BIN_EOF' > "$PKG_DIR/usr/bin/mxh-tu-dong"
+#!/bin/bash
+exec /opt/mxh-tu-dong/agent_mxh_auto "$@"
+BIN_EOF
+chmod +x "$PKG_DIR/usr/bin/mxh-tu-dong"
 
-# Icon
-cp "$MOBILE_DIR/assets/icon.png" "$PKG_DIR/usr/share/icons/hicolor/512x512/apps/tadu-cloud-ai-agent.png"
+# Icon day du kich thuoc chuan hicolor
+python3 -c "
+import os
+from PIL import Image
+
+src = '$APP_DIR/assets/icon.png'
+sizes = [16, 24, 32, 48, 64, 128, 256, 512]
+base = '$PKG_DIR/usr/share/icons/hicolor'
+im = Image.open(src)
+for s in sizes:
+    d = os.path.join(base, f'{s}x{s}', 'apps')
+    os.makedirs(d, exist_ok=True)
+    resized = im.resize((s, s), Image.Resampling.LANCZOS)
+    for n in ['mxh-tu-dong', 'agent.mxh.auto', 'agent_mxh_auto']:
+        resized.save(os.path.join(d, f'{n}.png'), format='PNG')
+"
 
 # Desktop Launcher
-cat << 'DESKTOP_EOF' > "$PKG_DIR/usr/share/applications/tadu-cloud-ai-agent.desktop"
+cat << 'DESKTOP_EOF' > "$PKG_DIR/usr/share/applications/mxh-tu-dong.desktop"
 [Desktop Entry]
-Name=MXH tự động
-Comment=MXH tự động Native Desktop Application
-Exec=/opt/tadu-cloud-ai-agent/agent_mxh_auto
-Icon=tadu-cloud-ai-agent
+Name=MXH Tự Động
+Comment=Phần mềm AI quản lý MXH tự động
+Exec=/usr/bin/mxh-tu-dong
+Icon=mxh-tu-dong
 Terminal=false
 Type=Application
 Categories=Development;Utility;
+StartupWMClass=agent.mxh.auto
 DESKTOP_EOF
+chmod 644 "$PKG_DIR/usr/share/applications/mxh-tu-dong.desktop"
 
-# Control file
+# Debian Pre-remove script (prerm) de don dep app cu khi go bo hoac nang cap
+cat << 'PRERM_EOF' > "$PKG_DIR/DEBIAN/prerm"
+#!/bin/bash
+set -e
+# Tat tien trinh cu neu dang chay
+pkill -f "/opt/mxh-tu-dong/agent_mxh_auto" 2>/dev/null || true
+exit 0
+PRERM_EOF
+chmod 755 "$PKG_DIR/DEBIAN/prerm"
+
+# Debian Post-installation script (postinst)
+cat << 'POSTINST_EOF' > "$PKG_DIR/DEBIAN/postinst"
+#!/bin/bash
+set -e
+if which gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+fi
+if which update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+exit 0
+POSTINST_EOF
+chmod 755 "$PKG_DIR/DEBIAN/postinst"
+
+# Debian Post-remove script (postrm)
+cat << 'POSTRM_EOF' > "$PKG_DIR/DEBIAN/postrm"
+#!/bin/bash
+set -e
+rm -rf /opt/mxh-tu-dong
+if which gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+fi
+if which update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+exit 0
+POSTRM_EOF
+chmod 755 "$PKG_DIR/DEBIAN/postrm"
+
+# Debian Control file
 cat << 'CONTROL_EOF' > "$PKG_DIR/DEBIAN/control"
-Package: tadu-cloud-ai-agent-flutter
-Version: 1.3.0
-Section: devel
+Package: mxh-tu-dong
+Version: 1.0.0
+Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: Tadu Cloud Team <support@tadu.vn>
-Description: MXH tự động Native Flutter Desktop Application
- High performance, lightweight native Linux desktop client for MXH tự động.
+Depends: libc6, libgtk-3-0
+Description: Phan mem AI quan ly MXH tu dong
+ Ung dung Flutter Desktop quan ly MXH tu dong tren Ubuntu va Debian Linux.
 CONTROL_EOF
 
-echo "=== [3/4] Packaging .deb installer ==="
-dpkg-deb --build "$PKG_DIR" "$DIST_DIR/$PKG_NAME.deb"
+echo "[3/4] Dong goi file cai dat .deb..."
+mkdir -p "$DIST_DIR"
+dpkg-deb --build "$PKG_DIR" "$DIST_DIR/mxh-tu-dong_1.0.0_amd64.deb"
+rm -rf "$PKG_DIR"
 
-echo "=== [4/4] Creating portable .tar.gz bundle ==="
-cd "$MOBILE_DIR/build/linux/x64/release/bundle"
-tar -czf "$DIST_DIR/tadu-cloud-ai-agent-flutter-linux-x64.tar.gz" .
+echo "[4/4] Tao ban nen Portable .tar.gz..."
+cd "$APP_DIR/build/linux/x64/release/bundle"
+tar -czf "$DIST_DIR/MXH-Tu-Dong-Portable-Ubuntu-x64.tar.gz" .
 
-echo "=== Done! Files generated in $DIST_DIR ==="
-ls -lh "$DIST_DIR"
+# Tao script cai dat tu dong ho tro don dep ban cu (install.sh)
+cat << 'INSTALL_SH_EOF' > "$DIST_DIR/install.sh"
+#!/bin/bash
+set -e
+
+echo "=========================================================="
+echo "    CAI DAT UNG DUNG MXH TU DONG CHO UBUNTU / DEBIAN     "
+echo "=========================================================="
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEB_FILE="$CURRENT_DIR/mxh-tu-dong_1.0.0_amd64.deb"
+
+if [ ! -f "$DEB_FILE" ]; then
+    echo "Loi: Khong tim thay file $DEB_FILE"
+    exit 1
+fi
+
+echo "[1/3] Don dep phien ban cu va dong tien trinh cu neu co..."
+pkill -9 -f "/opt/mxh-tu-dong/agent_mxh_auto" 2>/dev/null || true
+pkill -9 -f "agent_mxh_auto" 2>/dev/null || true
+
+# Go bo bang apt/dpkg neu package da cai dat
+if dpkg -s mxh-tu-dong >/dev/null 2>&1; then
+    echo "Dang go bo package debian cu..."
+    sudo dpkg -P mxh-tu-dong || true
+fi
+
+# Xoa thu muc cai dat cu va symlink neu ton tai
+echo "Dang xoa cac file cai dat cu con sot..."
+sudo rm -rf /opt/mxh-tu-dong
+sudo rm -f /usr/bin/mxh-tu-dong
+sudo rm -f /usr/share/applications/mxh-tu-dong.desktop
+sudo rm -f /usr/share/icons/hicolor/*/apps/mxh-tu-dong.*
+sudo rm -f /usr/share/icons/hicolor/*/apps/agent.mxh.auto.*
+sudo rm -f /usr/share/icons/hicolor/*/apps/agent_mxh_auto.*
+
+# Xoa cac file de lai trong user local neu co
+rm -f ~/.local/share/applications/mxh-tu-dong.desktop
+rm -f ~/.local/share/applications/agent.mxh.auto.desktop
+rm -f ~/.local/share/icons/hicolor/*/apps/mxh-tu-dong.png
+rm -f ~/.local/share/icons/hicolor/*/apps/agent.mxh.auto.png
+rm -f ~/.local/share/icons/hicolor/*/apps/agent_mxh_auto.png
+
+echo "[2/3] Tien hanh cai dat ban moi tu goi .deb..."
+sudo dpkg -i "$DEB_FILE" || sudo apt-get install -f -y
+
+echo "[3/3] Lam moi cache icon va desktop entry..."
+sudo gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+sudo update-desktop-database /usr/share/applications 2>/dev/null || true
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+
+echo "=========================================================="
+echo " CAI DAT THANH CONG!"
+echo " - Duong dan thuc thi: /usr/bin/mxh-tu-dong"
+echo " - Hoac mo truc tiep tu Menu Ung dung: 'MXH Tự Động'"
+echo "=========================================================="
+INSTALL_SH_EOF
+chmod +x "$DIST_DIR/install.sh"
+
+echo "========================================================"
+echo " HOAN TAT DONG GOI CHO UBUNTU!"
+echo " File cai dat .deb: $DIST_DIR/mxh-tu-dong_1.0.0_amd64.deb"
+echo " File script cai:   $DIST_DIR/install.sh"
+echo " File portable:    $DIST_DIR/MXH-Tu-Dong-Portable-Ubuntu-x64.tar.gz"
+echo "========================================================"

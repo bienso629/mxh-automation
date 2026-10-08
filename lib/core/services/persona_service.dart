@@ -14,25 +14,53 @@ class PersonaService {
   final LocalConfigService _configService = LocalConfigService();
   final DatabaseService _dbService = DatabaseService();
   final Map<String, PersonaProfile> _cachedPersonas = {};
+  String? _currentUserKey;
   bool _isLoaded = false;
 
-  String get _storageFilePath {
+  void switchUser(String? userKey) {
+    if (_currentUserKey != userKey) {
+      _currentUserKey = userKey;
+      _cachedPersonas.clear();
+      _isLoaded = false;
+    }
+  }
+
+  void clearCache() {
+    _cachedPersonas.clear();
+    _isLoaded = false;
+  }
+
+  List<String> get _candidateStoragePaths {
     final home = Platform.environment['USERPROFILE'] ??
         Platform.environment['HOME'] ??
         Directory.systemTemp.path;
-    final dir = p.join(home, '.agent_mxh_auto');
-    if (!Directory(dir).existsSync()) {
+    final primaryDir = p.join(home, '.agent_mxh_auto');
+    if (!Directory(primaryDir).existsSync()) {
       try {
-        Directory(dir).createSync(recursive: true);
+        Directory(primaryDir).createSync(recursive: true);
       } catch (_) {}
     }
-    return p.join(dir, 'personas.json');
+    final key = _currentUserKey ?? '';
+    final list = <String>[];
+    if (key.isNotEmpty) {
+      list.add(p.join(primaryDir, 'personas_$key.json'));
+    }
+    list.add(p.join(primaryDir, 'personas.json'));
+    list.add(p.join(home, '.tadu_ai_agent', 'personas.json'));
+    list.add(p.join(Directory.current.path, 'personas.json'));
+    return list;
   }
 
+  String get _storageFilePath => _candidateStoragePaths.first;
+
   /// Nạp danh sách nhân vật từ database local của app (fallback json nếu chưa có trong DB)
-  Future<Map<String, PersonaProfile>> loadSavedPersonas() async {
-    if (_isLoaded && _cachedPersonas.isNotEmpty) {
+  Future<Map<String, PersonaProfile>> loadSavedPersonas({bool forceReload = false}) async {
+    if (!forceReload && _isLoaded && _cachedPersonas.isNotEmpty) {
       return Map.unmodifiable(_cachedPersonas);
+    }
+
+    if (forceReload) {
+      _cachedPersonas.clear();
     }
 
     try {
@@ -43,31 +71,47 @@ class PersonaService {
       }
     } catch (_) {}
 
-    // 2. Đồng bộ thêm từ file JSON nếu database còn thiếu profile nào
-    try {
-      final file = File(_storageFilePath);
-      if (await file.exists()) {
-        final content = await file.readAsString();
-        if (content.trim().isNotEmpty) {
-          final decoded = jsonDecode(content);
-          if (decoded is Map<String, dynamic>) {
-            final toInsertToDb = <PersonaProfile>[];
-            decoded.forEach((ip, val) {
-              if (val is Map<String, dynamic>) {
-                final p = PersonaProfile.fromJson(val);
-                if (!_cachedPersonas.containsKey(ip)) {
-                  _cachedPersonas[ip] = p;
-                  toInsertToDb.add(p);
+    // 2. Đồng bộ thêm từ các file JSON dự phòng nếu database còn thiếu profile nào
+    for (final path in _candidateStoragePaths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          final content = await file.readAsString();
+          if (content.trim().isNotEmpty) {
+            final decoded = jsonDecode(content);
+            if (decoded is Map<String, dynamic>) {
+              final toInsertToDb = <PersonaProfile>[];
+              decoded.forEach((ip, val) {
+                if (val is Map<String, dynamic>) {
+                  final p = PersonaProfile.fromJson(val);
+                  if (!_cachedPersonas.containsKey(ip)) {
+                    _cachedPersonas[ip] = p;
+                    toInsertToDb.add(p);
+                  }
                 }
+              });
+              if (toInsertToDb.isNotEmpty) {
+                await _dbService.batchUpsertPersonaProfiles(toInsertToDb);
               }
-            });
-            if (toInsertToDb.isNotEmpty) {
-              await _dbService.batchUpsertPersonaProfiles(toInsertToDb);
             }
           }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+
+    // 3. Nếu DB có profiles mà file JSON chính chưa có thì đồng bộ ngược lại JSON
+    if (_cachedPersonas.isNotEmpty) {
+      try {
+        final mainFile = File(_storageFilePath);
+        if (!await mainFile.exists()) {
+          final mapToSave = <String, dynamic>{};
+          _cachedPersonas.forEach((ip, profile) {
+            mapToSave[ip] = profile.toJson();
+          });
+          await mainFile.writeAsString(const JsonEncoder.withIndent('  ').convert(mapToSave));
+        }
+      } catch (_) {}
+    }
 
     _isLoaded = true;
     return Map.unmodifiable(_cachedPersonas);
@@ -114,6 +158,8 @@ class PersonaService {
     return _cachedPersonas[ip];
   }
 
+  Map<String, PersonaProfile> get allPersonas => Map.unmodifiable(_cachedPersonas);
+
   Future<Map<String, PersonaProfile>> generatePersonas({
     required List<String> ips,
     String? model,
@@ -132,6 +178,7 @@ Mỗi nhân vật phải gồm:
 - age: Tuổi (từ 18 đến 45)
 - gender: Giới tính ("Nam" hoặc "Nữ")
 - bio: Mô tả cá tính, tính cách, sở thích và phong cách sống (khoảng 1 - 2 câu súc tích)
+- email: Địa chỉ email tự nhiên phù hợp với tên nhân vật (ví dụ: nam.nguyenhoang98@gmail.com, triet.leminh89@outlook.com...)
 - agent_info: Vai trò, nhiệm vụ chính của nhân vật này trong hệ thống MXH (ví dụ: "Seeding bài viết ẩm thực, bình luận chia sẻ kinh nghiệm quán ăn, tạo tương tác tự nhiên với khách hàng", hoặc "Review đồ công nghệ, trả lời giải đáp thắc mắc người xem livestream", hoặc "Chăm sóc khách hàng, tương tác thân thiện trong group cộng đồng"...)
 - avatar_prompt: Một prompt chi tiết bằng tiếng Anh chuyên dùng cho AI vẽ ảnh (Midjourney/FLUX/Stable Diffusion) để tạo chân dung cận cảnh avatar cho nhân vật này. ĐẶC BIỆT: Prompt ảnh BẮT BUỘC PHẢI THỂ HIỆN RÕ CÁ TÍNH, VAI TRÒ VÀ NHIỆM VỤ của nhân vật từ bio và agent_info (ví dụ về trang phục, biểu cảm khuôn mặt, ánh mắt, bối cảnh làm việc hoặc môi trường phù hợp với vai trò của họ). Ví dụ: "Close-up portrait of a 24-year-old Vietnamese female food reviewer, vibrant cheerful expression, stylish casual hoodie, holding a subtle coffee cup, blurred modern cafe background with warm bokeh lights, cinematic sunlight, hyperrealistic 8k".
 
@@ -143,6 +190,7 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
     "age": 25,
     "gender": "Nam",
     "bio": "...",
+    "email": "...",
     "agent_info": "...",
     "avatar_prompt": "..."
   }
@@ -241,6 +289,7 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
                 gender: item['gender']?.toString() ?? 'Nam',
                 bio: item['bio']?.toString() ?? 'Người dùng mạng xã hội',
                 agentInfo: item['agent_info']?.toString() ?? item['agentInfo']?.toString() ?? 'Tương tác mạng xã hội tự nhiên',
+                email: item['email']?.toString(),
                 avatarPrompt: item['avatar_prompt']?.toString() ?? item['avatarPrompt']?.toString() ?? 'Portrait photo, photorealistic 8k',
               );
             }
