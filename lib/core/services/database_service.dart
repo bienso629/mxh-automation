@@ -164,6 +164,12 @@ class DatabaseService {
       await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN sms_order_id TEXT');
     } catch (_) {}
     try {
+      await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN device_resolution TEXT');
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN automation_macros_json TEXT');
+    } catch (_) {}
+    try {
       await _db!.execute('ALTER TABLE chat_sessions ADD COLUMN cli_conv_id TEXT');
     } catch (_) {}
   }
@@ -589,6 +595,18 @@ class DatabaseService {
                 : null,
             autoSyncPhoneToDevice: r['auto_sync_phone_to_device'] == 1,
             smsOrderId: r['sms_order_id']?.toString(),
+            deviceResolution: r['device_resolution']?.toString(),
+            automationMacros: () {
+              final raw = r['automation_macros_json']?.toString();
+              if (raw != null && raw.isNotEmpty) {
+                try {
+                  final dec = _enc.decryptValue(raw);
+                  final parsed = jsonDecode(dec);
+                  if (parsed is Map) return Map<String, dynamic>.from(parsed);
+                } catch (_) {}
+              }
+              return null;
+            }(),
           );
         }
       }
@@ -629,6 +647,10 @@ class DatabaseService {
             : null,
         'auto_sync_phone_to_device': profile.autoSyncPhoneToDevice ? 1 : 0,
         'sms_order_id': profile.smsOrderId,
+        'device_resolution': profile.deviceResolution,
+        'automation_macros_json': profile.automationMacros != null
+            ? _enc.encryptValue(jsonEncode(profile.automationMacros))
+            : null,
         'updated_at': DateTime.now().toIso8601String(),
       };
       await db.insert(
@@ -677,6 +699,10 @@ class DatabaseService {
                 : null,
             'auto_sync_phone_to_device': p.autoSyncPhoneToDevice ? 1 : 0,
             'sms_order_id': p.smsOrderId,
+            'device_resolution': p.deviceResolution,
+            'automation_macros_json': p.automationMacros != null
+                ? _enc.encryptValue(jsonEncode(p.automationMacros))
+                : null,
             'updated_at': DateTime.now().toIso8601String(),
           },
           conflictAlgorithm: ConflictAlgorithm.replace,

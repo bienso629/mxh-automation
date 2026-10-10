@@ -195,7 +195,9 @@ class AuthProvider extends ChangeNotifier {
           'reputation': resp['reputation'],
           'avatar': avatarUrl,
           'status': resp['status'],
-          'groups': <String>[],
+          'groups': (resp['groups'] is List)
+              ? (resp['groups'] as List).map((e) => e.toString()).toList()
+              : <String>[],
         };
 
         // Kiểm tra quyền nhóm qua /forum/groups giống hệt checkAccount() của ai.type
@@ -255,14 +257,20 @@ class AuthProvider extends ChangeNotifier {
         notifyListeners();
         return true;
       } else {
-        // Tài khoản không đúng hoặc không được chấp nhận
-        _errorMessage = (body['message'] ?? 'Tài khoản của bạn không đúng hoặc không được chấp nhận.').toString();
+        // Tài khoản không đúng hoặc máy chủ xác thực gặp sự cố
+        if (statusCode == 500 || statusCode == 501 || statusCode == 502 || statusCode == 503 || statusCode == 504) {
+          _errorMessage = 'Máy chủ xác thực ($server) đang gặp sự cố nội bộ (Mã lỗi: $statusCode - Internal Server Error). Vui lòng thử lại sau hoặc chuyển máy chủ khác.';
+        } else if (statusCode == 403 || statusCode == 401) {
+          _errorMessage = 'Email hoặc mật khẩu không chính xác.';
+        } else {
+          _errorMessage = (body['message'] ?? 'Tài khoản của bạn không đúng hoặc không được chấp nhận.').toString();
+        }
         _isLoading = false;
         notifyListeners();
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Tài khoản của bạn không được chấp nhận: $e';
+      _errorMessage = 'Lỗi kết nối tới máy chủ xác thực: $e';
       _isLoading = false;
       notifyListeners();
       return false;

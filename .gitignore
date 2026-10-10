@@ -39,6 +39,7 @@ migrate_working_dir/
 
 # Platform specific build artifacts
 /android/.gradle/
+/android/build/
 /android/local.properties
 /android/app/debug
 /android/app/profile
@@ -62,3 +63,5 @@ app.*.map.json
 docs/
 dist-flutter/
 dist-macos/
+dist/
+uploads/

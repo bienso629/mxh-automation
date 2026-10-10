@@ -1,14 +1,19 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/cli_scanner_service.dart';
 import '../../core/services/local_config_service.dart';
 import '../../core/services/native_ssh_service.dart';
+import '../../core/services/persona_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_toast.dart';
 import '../../core/widgets/model_picker_dialog.dart';
 import '../../core/widgets/tadu_dialog.dart';
+import '../../models/persona_profile_model.dart';
 import '../../models/server_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/gateway_provider.dart';
@@ -676,11 +681,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-                  icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text('Thêm Máy Chủ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                  onPressed: () => _showAddEditServerDialog(),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.accentCyan,
+                        side: const BorderSide(color: AppColors.accentCyan),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                      icon: const Icon(Icons.file_upload_outlined, size: 16),
+                      label: const Text('Import Server', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: () => _handleImportServerPackage(),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+                      icon: const Icon(Icons.add_rounded, size: 16),
+                      label: const Text('Thêm Máy Chủ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: () => _showAddEditServerDialog(),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -740,8 +760,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 460,
-                        mainAxisExtent: 125,
+                        maxCrossAxisExtent: 490,
+                        mainAxisExtent: 130,
                         crossAxisSpacing: 12,
                         mainAxisSpacing: 12,
                       ),
@@ -850,17 +870,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  if (!isSelected)
-                                    ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppColors.primary,
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  Row(
+                                    children: [
+                                      if (!isSelected)
+                                        ElevatedButton(
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: AppColors.primary,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          ),
+                                          onPressed: () => serverProvider.selectServer(s),
+                                          child: const Text('Chọn Server', style: TextStyle(fontSize: 11)),
+                                        )
+                                      else
+                                        const Text('Mặc định', style: TextStyle(fontSize: 11, color: AppColors.accent)),
+                                      const SizedBox(width: 8),
+                                      OutlinedButton.icon(
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: AppColors.primaryLight,
+                                          side: BorderSide(color: AppColors.primaryLight.withValues(alpha: 0.5)),
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        ),
+                                        icon: const Icon(Icons.archive_outlined, size: 13),
+                                        label: const Text('Backup/Import', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600)),
+                                        onPressed: () => _showServerBackupImportSheet(s, serverProvider),
                                       ),
-                                      onPressed: () => serverProvider.selectServer(s),
-                                      child: const Text('Chọn Server', style: TextStyle(fontSize: 11)),
-                                    )
-                                  else
-                                    const Text('Mặc định', style: TextStyle(fontSize: 11, color: AppColors.accent)),
+                                    ],
+                                  ),
                                   Row(
                                     children: [
                                       IconButton(
@@ -920,14 +955,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const Divider(height: 20),
 
-                        // CHỌN CHẾ ĐỘ AI ENGINE: PROXY AI vs LOCAL CLI AGENT (CHỈ HIỂN THỊ CLI CHO ADMIN)
-                        if (isAdmin) ...[
-                          const Text(
-                            'Chế Độ Vận Hành AI Agent',
-                            style: TextStyle(fontSize: 11, color: AppColors.textDim, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
+                        // CHỌN CHẾ ĐỘ AI ENGINE: Luôn có Proxy AI, chỉ Admin mới thấy thêm lựa chọn "Local CLI Agent (Máy Local)"
+                        const Text(
+                          'Chế Độ Vận Hành AI Agent',
+                          style: TextStyle(fontSize: 11, color: AppColors.textDim, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
                             children: [
                               Expanded(
                                 child: InkWell(
@@ -986,90 +1020,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () {
-                                    setState(() {
-                                      _aiEngineType = 'cli';
-                                    });
-                                  },
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                                    decoration: BoxDecoration(
-                                      color: _aiEngineType == 'cli'
-                                          ? AppColors.accent.withValues(alpha: 0.15)
-                                          : AppColors.bgDark,
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(
+                              if (isAdmin) ...[
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _aiEngineType = 'cli';
+                                      });
+                                    },
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                      decoration: BoxDecoration(
                                         color: _aiEngineType == 'cli'
-                                            ? AppColors.accent
-                                            : AppColors.borderDark,
-                                        width: _aiEngineType == 'cli' ? 1.5 : 1,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.terminal_rounded,
-                                          size: 20,
-                                          color: _aiEngineType == 'cli' ? AppColors.accent : AppColors.textMuted,
+                                            ? AppColors.accent.withValues(alpha: 0.15)
+                                            : AppColors.bgDark,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                          color: _aiEngineType == 'cli'
+                                              ? AppColors.accent
+                                              : AppColors.borderDark,
+                                          width: _aiEngineType == 'cli' ? 1.5 : 1,
                                         ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  Text(
-                                                    'Local CLI Agent (Máy Local)',
-                                                    style: TextStyle(
-                                                      fontSize: 12,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: _aiEngineType == 'cli' ? Colors.white : AppColors.textDim,
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 6),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                                    decoration: BoxDecoration(
-                                                      color: AppColors.accent.withValues(alpha: 0.2),
-                                                      borderRadius: BorderRadius.circular(3),
-                                                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
-                                                    ),
-                                                    child: const Text(
-                                                      'ADMIN',
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.terminal_rounded,
+                                            size: 20,
+                                            color: _aiEngineType == 'cli' ? AppColors.accent : AppColors.textMuted,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  children: [
+                                                    Text(
+                                                      'Local CLI Agent (Máy Local)',
                                                       style: TextStyle(
-                                                        fontSize: 9,
+                                                        fontSize: 12,
                                                         fontWeight: FontWeight.bold,
-                                                        color: AppColors.accent,
+                                                        color: _aiEngineType == 'cli' ? Colors.white : AppColors.textDim,
                                                       ),
                                                     ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 2),
-                                              const Text(
-                                                'Chạy trực tiếp công cụ CLI đã cài đặt (Antigravity agy, Claude...)',
-                                                style: TextStyle(fontSize: 10, color: AppColors.textMuted),
-                                              ),
-                                            ],
+                                                    const SizedBox(width: 6),
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                      decoration: BoxDecoration(
+                                                        color: AppColors.accent.withValues(alpha: 0.2),
+                                                        borderRadius: BorderRadius.circular(3),
+                                                        border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                                                      ),
+                                                      child: const Text(
+                                                        'ADMIN',
+                                                        style: TextStyle(
+                                                          fontSize: 9,
+                                                          fontWeight: FontWeight.bold,
+                                                          color: AppColors.accent,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 2),
+                                                const Text(
+                                                  'Chạy trực tiếp công cụ CLI đã cài đặt (Antigravity agy, Claude...)',
+                                                  style: TextStyle(fontSize: 10, color: AppColors.textMuted),
+                                                ),
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                        if (_aiEngineType == 'cli')
-                                          const Icon(Icons.check_circle_rounded, size: 18, color: AppColors.accent),
-                                      ],
+                                          if (_aiEngineType == 'cli')
+                                            const Icon(Icons.check_circle_rounded, size: 18, color: AppColors.accent),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 16),
-                        ],
-
                         // NỘI DUNG FORM CHI TIẾT THEO CHẾ ĐỘ (USER THƯỜNG LUÔN LÀ PROXY AI, CHỈ ADMIN MỚI THẤY CLI)
                         if (!isAdmin || _aiEngineType == 'proxy') ...[
                           Row(
@@ -1315,10 +1349,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             const Text('Môi Trường Thực Thi Mặc Định Cho Tác Vụ', style: TextStyle(fontSize: 11, color: AppColors.textDim)),
                             const SizedBox(height: 8),
                             InkWell(
-                              onTap: () {
+                              onTap: () async {
+                                final newVal = !_isDeviceExecutionMode;
                                 setState(() {
-                                  _isDeviceExecutionMode = !_isDeviceExecutionMode;
+                                  _isDeviceExecutionMode = newVal;
                                 });
+                                try {
+                                  final cfg = await _api.getConfig();
+                                  cfg['default_execution_mode'] = newVal ? 'device' : 'browser';
+                                  await _api.saveConfig(cfg);
+                                  if (!context.mounted) return;
+                                  AppToast.info(context, newVal ? 'Đã đổi chế độ: Thiết bị (Device / AVD)' : 'Đã đổi chế độ: Trình duyệt (Browser)');
+                                } catch (_) {}
                               },
                               borderRadius: BorderRadius.circular(6),
                               child: Container(
@@ -1375,10 +1417,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         activeTrackColor: Colors.purpleAccent.withValues(alpha: 0.3),
                                         inactiveThumbColor: AppColors.primaryLight,
                                         inactiveTrackColor: AppColors.primary.withValues(alpha: 0.3),
-                                        onChanged: (val) {
+                                        onChanged: (val) async {
                                           setState(() {
                                             _isDeviceExecutionMode = val;
                                           });
+                                          try {
+                                            final cfg = await _api.getConfig();
+                                            cfg['default_execution_mode'] = val ? 'device' : 'browser';
+                                            await _api.saveConfig(cfg);
+                                            if (!context.mounted) return;
+                                            AppToast.info(context, val ? 'Đã đổi chế độ: Thiết bị (Device / AVD)' : 'Đã đổi chế độ: Trình duyệt (Browser)');
+                                          } catch (_) {}
                                         },
                                       ),
                                     ),
@@ -1598,5 +1647,239 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  void _showServerBackupImportSheet(ServerModel server, ServerProvider serverProvider) {
+    final ips = serverProvider.getIpsForServer(server);
+    final personaService = PersonaService();
+    final allPersonas = personaService.allPersonas;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.bgDark,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        side: BorderSide(color: AppColors.borderDark),
+      ),
+      builder: (bCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.archive_outlined, color: AppColors.primaryLight, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Backup / Import Máy Chủ: ${server.name}',
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18, color: AppColors.textMuted),
+                    onPressed: () => Navigator.pop(bCtx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Máy chủ IP: ${server.serverIp} (${ips.length} IPs đi kèm). File backup chứa cấu hình SSH, AI model và toàn bộ Persona profile của dải IP.',
+                style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: const BorderSide(color: AppColors.borderDark),
+                ),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.accentCyan.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.download_rounded, color: AppColors.accentCyan, size: 20),
+                ),
+                title: const Text('Export Backup Máy Chủ Này', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                subtitle: Text('Lưu file .json chứa cấu hình máy chủ và ${ips.length} IPs/Personas', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                onTap: () async {
+                  Navigator.pop(bCtx);
+                  await _exportServerPackage(server, ips, allPersonas);
+                },
+              ),
+              const SizedBox(height: 10),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: const BorderSide(color: AppColors.borderDark),
+                ),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.upload_file_rounded, color: AppColors.primaryLight, size: 20),
+                ),
+                title: const Text('Import Cấu Hình & Danh Sách IP', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                subtitle: const Text('Chọn file backup .json để ghi đè hoặc nạp thêm IP vào máy chủ này', style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                onTap: () async {
+                  Navigator.pop(bCtx);
+                  await _handleImportServerPackage(targetServer: server);
+                },
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportServerPackage(ServerModel server, List<String> ips, Map<String, PersonaProfile> allPersonas) async {
+    try {
+      final safeServerName = server.name.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+      final fileName = 'server_backup_${safeServerName}_${DateTime.now().millisecondsSinceEpoch}.json';
+
+      // Thu thập thông tin personas tương ứng với danh sách IP của server này
+      final serverPersonasMap = <String, dynamic>{};
+      for (final ip in ips) {
+        if (allPersonas.containsKey(ip)) {
+          serverPersonasMap[ip] = allPersonas[ip]!.toJson();
+        }
+      }
+
+      final payload = {
+        'version': 1,
+        'exported_at': DateTime.now().toIso8601String(),
+        'server': server.toJson(),
+        'ips': ips,
+        'personas': serverPersonasMap,
+      };
+
+      final jsonContent = const JsonEncoder.withIndent('  ').convert(payload);
+
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Chọn nơi lưu file backup máy chủ',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (savePath == null) {
+        return;
+      }
+
+      final file = File(savePath);
+      await file.writeAsString(jsonContent);
+
+      if (mounted) {
+        AppToast.success(context, 'Đã xuất backup máy chủ thành công ra:\n$savePath');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi xuất backup: $e');
+      }
+    }
+  }
+
+  Future<void> _handleImportServerPackage({ServerModel? targetServer}) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        dialogTitle: 'Chọn file backup cấu hình máy chủ (.json)',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty || result.files.single.path == null) {
+        return;
+      }
+
+      final filePath = result.files.single.path!;
+      final file = File(filePath);
+      if (!await file.exists()) {
+        if (mounted) AppToast.error(context, 'File không tồn tại');
+        return;
+      }
+
+      final content = await file.readAsString();
+      final decoded = jsonDecode(content);
+
+      if (decoded is! Map<String, dynamic>) {
+        if (mounted) AppToast.error(context, 'Định dạng file backup không hợp lệ');
+        return;
+      }
+
+      if (!mounted) return;
+      final serverProvider = Provider.of<ServerProvider>(context, listen: false);
+      final personaService = PersonaService();
+
+      // Trường hợp 1: File chứa cấu hình máy chủ đầy đủ
+      ServerModel? importedServer;
+      if (decoded['server'] is Map<String, dynamic>) {
+        importedServer = ServerModel.fromJson(decoded['server'] as Map<String, dynamic>);
+      } else if (targetServer != null) {
+        importedServer = targetServer;
+      }
+
+      if (importedServer == null && targetServer == null) {
+        if (mounted) AppToast.error(context, 'File không có thông tin máy chủ để import');
+        return;
+      }
+
+      final serverToSave = (targetServer != null && importedServer != null)
+          ? importedServer.copyWith(id: targetServer.id, serverIp: targetServer.serverIp)
+          : (importedServer ?? targetServer!);
+
+      // Lưu/Cập nhật máy chủ
+      await serverProvider.addOrUpdateServer(serverToSave);
+
+      // Lưu các persona và danh sách IP đi kèm
+      int importedIpsCount = 0;
+      if (decoded['personas'] is Map<String, dynamic>) {
+        final personasMap = decoded['personas'] as Map<String, dynamic>;
+        final personasToSave = <String, PersonaProfile>{};
+        personasMap.forEach((ip, val) {
+          if (val is Map<String, dynamic>) {
+            personasToSave[ip] = PersonaProfile.fromJson(val);
+          }
+        });
+        if (personasToSave.isNotEmpty) {
+          await personaService.savePersonas(personasToSave);
+          importedIpsCount = personasToSave.length;
+        }
+      }
+
+      // Nạp danh sách IPs vào cache map của server
+      if (decoded['ips'] is List) {
+        final rawIps = (decoded['ips'] as List).map((e) => e.toString()).toList();
+        if (rawIps.isNotEmpty) {
+          serverProvider.serverIpsMap[serverToSave.id] = rawIps;
+          importedIpsCount = rawIps.length > importedIpsCount ? rawIps.length : importedIpsCount;
+        }
+      }
+
+      await serverProvider.loadServers();
+
+      if (mounted) {
+        AppToast.success(
+          context,
+          'Import thành công máy chủ "${serverToSave.name}" kèm $importedIpsCount IP nhân vật!',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi import máy chủ: $e');
+      }
+    }
   }
 }

@@ -10,6 +10,51 @@ import 'adb_manager_service.dart';
 import 'local_config_service.dart';
 import 'persona_service.dart';
 
+/// Hàm chuẩn hóa chuỗi tiếng Việt có dấu thành không dấu an toàn cho tên hệ thống / tên tệp / tên AVD
+String removeVietnameseDiacritics(String str) {
+  var result = str;
+  const vietnameseMap = {
+    'a': 'áàảãạăắằẳẵặâấầẩẫậ',
+    'A': 'ÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬ',
+    'd': 'đ',
+    'D': 'Đ',
+    'e': 'éèẻẽẹêếềểễệ',
+    'E': 'ÉÈẺẼẸÊẾỀỂỄỆ',
+    'i': 'íìỉĩị',
+    'I': 'ÍÌỈĨỊ',
+    'o': 'óòỏõọôốồổỗộơớờởỡợ',
+    'O': 'ÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢ',
+    'u': 'úùủũụưứừửữự',
+    'U': 'ÚÙỦŨỤƯỨỪỬỮỰ',
+    'y': 'ýỳỷỹỵ',
+    'Y': 'ÝỲỶỸỴ',
+  };
+
+  vietnameseMap.forEach((nonAccent, accents) {
+    for (int i = 0; i < accents.length; i++) {
+      result = result.replaceAll(accents[i], nonAccent);
+    }
+  });
+
+  return result;
+}
+
+/// Sinh tên AVD máy ảo đồng nhất theo tên nhân vật (Persona Name), fallback về địa chỉ IP nếu tên rỗng
+String generatePersonaAvdName({required String ip, String? personaName}) {
+  final cleanIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+  if (personaName != null && personaName.trim().isNotEmpty) {
+    final noDiacritics = removeVietnameseDiacritics(personaName.trim());
+    var slug = noDiacritics
+        .replaceAll(RegExp(r'[^a-zA-Z0-9_-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    if (slug.isNotEmpty) {
+      return 'Pixel_10_Pro_persona_$slug';
+    }
+  }
+  return 'Pixel_10_Pro_persona_$cleanIp';
+}
+
 class Socks5Session {
   final int localPort;
   final ServerModel? server;
@@ -92,40 +137,92 @@ class Socks5ProxyService extends ChangeNotifier {
     });
   }
 
-  /// Kiểm tra các session đang ghi nhận, nếu cả trình duyệt lẫn mobile device của session không còn tiến trình nào chạy thì dọn dẹp
+  /// Kiểm tra các session đang ghi nhận, dọn dẹp khi tiến trình tắt và tự động phát hiện thiết bị đang chạy ngoài OS
   void _checkTerminatedBrowsers() {
-    if (_activeSessions.isEmpty) return;
-    final deadIps = <String>[];
     final now = DateTime.now();
+    bool stateChanged = false;
 
-    for (final entry in _activeSessions.entries) {
-      final ip = entry.key;
-      final session = entry.value;
+    // 1. Dọn dẹp session đã kết thúc
+    if (_activeSessions.isNotEmpty) {
+      final deadIps = <String>[];
+      for (final entry in _activeSessions.entries) {
+        final ip = entry.key;
+        final session = entry.value;
 
-      // Thời gian ân hạn 10 giây sau khi tạo session hoặc vừa mở trình duyệt
-      // Tránh trường hợp watchdog quét trúng lúc trình duyệt đang khởi động (chưa kịp ghi /proc/*/cmdline)
-      final timeSinceCreated = now.difference(session.createdAt);
-      if (timeSinceCreated < const Duration(seconds: 10)) {
-        continue;
-      }
-      if (session.browserLaunchedAt != null) {
-        final timeSinceLaunch = now.difference(session.browserLaunchedAt!);
-        if (timeSinceLaunch < const Duration(seconds: 10)) {
+        // Thời gian ân hạn 10 giây sau khi tạo session hoặc vừa mở trình duyệt
+        final timeSinceCreated = now.difference(session.createdAt);
+        if (timeSinceCreated < const Duration(seconds: 10)) {
           continue;
+        }
+        if (session.browserLaunchedAt != null) {
+          final timeSinceLaunch = now.difference(session.browserLaunchedAt!);
+          if (timeSinceLaunch < const Duration(seconds: 10)) {
+            continue;
+          }
+        }
+
+        // Kiểm tra thực tế trên hệ thống xem profile IP này còn tiến trình trình duyệt hoặc device nào không
+        if (!_isSystemProcessAliveForIp(ip) && !_isDeviceProcessAliveForIp(ip)) {
+          deadIps.add(ip);
         }
       }
 
-      // Kiểm tra thực tế trên hệ thống xem profile IP này còn tiến trình trình duyệt hoặc device nào không
-      if (!_isSystemProcessAliveForIp(ip) && !_isDeviceProcessAliveForIp(ip)) {
-        deadIps.add(ip);
+      if (deadIps.isNotEmpty) {
+        for (final ip in deadIps) {
+          final session = _activeSessions.remove(ip);
+          session?.stop();
+        }
+        stateChanged = true;
       }
     }
 
-    if (deadIps.isNotEmpty) {
-      for (final ip in deadIps) {
-        final session = _activeSessions.remove(ip);
-        session?.stop();
+    // 2. Tự động quét và phát hiện các mobile device / emulator đang chạy trên OS (kể cả do CLI mxh-tool mở hoặc app vừa khởi động lại)
+    try {
+      final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
+      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
+      if (tmpDir.existsSync()) {
+        for (final f in tmpDir.listSync(followLinks: false)) {
+          if (f is File && f.path.contains('device_') && f.path.endsWith('.json')) {
+            try {
+              final content = f.readAsStringSync();
+              final meta = json.decode(content);
+              final ip = meta['ip']?.toString();
+              final emuPid = meta['emulator_pid'];
+              final cport = meta['console_port'];
+              if (ip != null && ip.isNotEmpty && emuPid != null && emuPid is int) {
+                final isAlive = File('/proc/$emuPid/cmdline').existsSync() || Process.killPid(emuPid, ProcessSignal.sigcont);
+                if (isAlive) {
+                  if (!_activeSessions.containsKey(ip)) {
+                    final newSession = Socks5Session(
+                      localPort: 0,
+                      ip: ip,
+                    );
+                    if (cport != null) {
+                      newSession.emulatorPort = int.tryParse(cport.toString());
+                    }
+                    _activeSessions[ip] = newSession;
+                    stateChanged = true;
+                  } else {
+                    final exist = _activeSessions[ip]!;
+                    if (exist.emulatorPort == null && cport != null) {
+                      exist.emulatorPort = int.tryParse(cport.toString());
+                      stateChanged = true;
+                    }
+                  }
+                } else {
+                  // Tiến trình không còn tồn tại, xóa file metadata rác
+                  try {
+                    f.deleteSync();
+                  } catch (_) {}
+                }
+              }
+            } catch (_) {}
+          }
+        }
       }
+    } catch (_) {}
+
+    if (stateChanged) {
       notifyListeners();
     }
   }
@@ -196,8 +293,26 @@ class Socks5ProxyService extends ChangeNotifier {
           return true;
         }
       }
-      final port = session?.emulatorPort;
+
       final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+
+      // 1. Kiểm tra file metadata device_<ip>.json do CLI mxh-tool hoặc app tạo ra
+      try {
+        final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
+        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedIp.json'));
+        if (metaFile.existsSync()) {
+          final content = metaFile.readAsStringSync();
+          final meta = json.decode(content);
+          final emuPid = meta['emulator_pid'];
+          if (emuPid != null && emuPid is int) {
+            if (File('/proc/$emuPid/cmdline').existsSync() || Process.killPid(emuPid, ProcessSignal.sigcont)) {
+              return true;
+            }
+          }
+        }
+      } catch (_) {}
+
+      final port = session?.emulatorPort;
       final needleProfile = 'device_profiles/ip_$sanitizedIp';
       final needlePersonaAvd = 'persona_$sanitizedIp';
       final needlePort = port != null ? '-port\x00$port' : null;
@@ -231,7 +346,32 @@ class Socks5ProxyService extends ChangeNotifier {
 
   /// Tìm console port (5554, 5556,...) của máy ảo AVD đang chạy trên hệ thống
   int? _findRunningConsolePortForAvd(String avdName) {
-    // 1. Quét tiến trình thực tế trong /proc khớp chính xác tên avdName và -port
+    // 1. Kiểm tra trong metadata json trước nếu có
+    try {
+      final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
+      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
+      if (tmpDir.existsSync()) {
+        for (final f in tmpDir.listSync(followLinks: false)) {
+          if (f is File && f.path.contains('device_') && f.path.endsWith('.json')) {
+            try {
+              final meta = json.decode(f.readAsStringSync());
+              if (meta['target_avd'] == avdName || (meta['ip'] != null && avdName.contains(meta['ip'].toString().replaceAll('.', '_')))) {
+                final emuPid = meta['emulator_pid'];
+                if (emuPid != null && emuPid is int && File('/proc/$emuPid/cmdline').existsSync()) {
+                  final cport = meta['console_port'];
+                  if (cport != null) {
+                    final parsed = int.tryParse(cport.toString());
+                    if (parsed != null) return parsed;
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2. Quét tiến trình thực tế trong /proc khớp tên avdName và -port
     try {
       final procDir = Directory('/proc');
       if (procDir.existsSync()) {
@@ -775,6 +915,12 @@ class Socks5ProxyService extends ChangeNotifier {
     ServerModel? server,
     String? startUrl,
   }) async {
+    // Nếu trình duyệt của nhân vật này đang chạy sẵn rồi thì không mở thêm cửa sổ trùng lặp nữa
+    if (isBrowserRunningForIp(ip)) {
+      debugPrint('[Browser] Trình duyệt cho IP $ip đang hoạt động, bỏ qua không mở thêm phiên trùng lặp.');
+      return true;
+    }
+
     final executable = findBrowserExecutable();
     if (executable == null) {
       throw Exception('Không tìm thấy trình duyệt khả dụng (Chrome, Edge, Opera, Brave, Firefox) trên hệ thống local.');
@@ -846,10 +992,11 @@ class Socks5ProxyService extends ChangeNotifier {
       }
     }
 
-    // Thử kết nối SOCKS5 nếu có server được chỉ định
+    // Thử kết nối SOCKS5 nếu có server được chỉ định (ngoại trừ 127.0.0.1 / localhost là mạng trực tiếp của máy tính)
     String? socks5Proxy;
     Socks5Session? session;
-    if (server != null) {
+    final isLocalDirect = ip == '127.0.0.1' || ip == 'localhost';
+    if (server != null && !isLocalDirect) {
       try {
         session = await startSocks5Server(server: server, ip: ip);
         socks5Proxy = 'socks5://127.0.0.1:${session.localPort}';
@@ -902,6 +1049,15 @@ class Socks5ProxyService extends ChangeNotifier {
       ];
     } else {
       final extDir = '${profileDir.path}/vietnamese_meta_ext';
+      final tiktokCaptchaExtDir = '/home/yenai/Documents/Projects/Typing/apps/plugins/agent-mxh-auto/extensions/tiktok_captcha_solver';
+      final List<String> loadedExtensions = [];
+      if (Directory(extDir).existsSync()) {
+        loadedExtensions.add(extDir);
+      }
+      if (Directory(tiktokCaptchaExtDir).existsSync()) {
+        loadedExtensions.add(tiktokCaptchaExtDir);
+      }
+
       args = [
         '--lang=vi',
         '--accept-lang=vi-VN,vi,en-US,en',
@@ -912,7 +1068,7 @@ class Socks5ProxyService extends ChangeNotifier {
         if (Platform.isLinux) '--ozone-platform=x11',
         if (socks5Proxy != null) '--proxy-server=$socks5Proxy',
         '--user-data-dir=${profileDir.path}',
-        if (Directory(extDir).existsSync()) '--load-extension=$extDir',
+        if (loadedExtensions.isNotEmpty) '--load-extension=${loadedExtensions.join(',')}',
         '--no-first-run',
         '--no-default-browser-check',
         '--ignore-certificate-errors',
@@ -1208,6 +1364,7 @@ except Exception:
   /// Kiểm tra xem nhân vật theo IP đã có thiết bị (AVD clone hoặc địa chỉ ngoại vi) hay chưa
   Future<bool> hasDeviceForPersona({
     required String ip,
+    String? personaName,
     String? avdName,
     bool useExternalDevice = false,
     String? externalDeviceAddress,
@@ -1222,15 +1379,16 @@ except Exception:
     if (!avdsDir.existsSync()) return false;
 
     final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    final expectedPersonaAvd = generatePersonaAvdName(ip: ip, personaName: personaName);
 
-    // Quét xem có file .ini của persona hoặc clone của IP này không
+    // Quét xem có file .ini của persona hoặc clone của IP này hoặc theo tên nhân vật không
     try {
       final entities = avdsDir.listSync();
       for (final e in entities) {
         final name = p.basename(e.path);
         if (name.endsWith('.ini')) {
           final iniName = name.substring(0, name.length - 4);
-          if (iniName.contains('persona_$sanitizedIp')) {
+          if (iniName == expectedPersonaAvd || iniName.contains('persona_$sanitizedIp')) {
             // Kiểm tra thư mục .avd tương ứng có tồn tại không
             final avdFolder = Directory(p.join(avdsDir.path, '$iniName.avd'));
             if (avdFolder.existsSync()) return true;
@@ -1251,9 +1409,10 @@ except Exception:
     return false;
   }
 
-  /// Import thiết bị từ file backup (.tar.gz hoặc .zip) cho nhân vật theo IP
+  /// Import thiết bị từ file backup (.tar.gz hoặc .zip) cho nhân vật theo IP và tên nhân vật
   Future<String> importPersonaDeviceBackup({
     required String ip,
+    String? personaName,
     required String archivePath,
   }) async {
     final file = File(archivePath);
@@ -1266,8 +1425,7 @@ except Exception:
       avdsDir.createSync(recursive: true);
     }
 
-    final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-    final targetAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
+    final targetAvdName = generatePersonaAvdName(ip: ip, personaName: personaName);
     final targetAvdDir = Directory(p.join(avdsDir.path, '$targetAvdName.avd'));
     final targetIniFile = File(p.join(avdsDir.path, '$targetAvdName.ini'));
 
@@ -1656,9 +1814,10 @@ for root, _, files in os.walk(target_dir):
     return targetTarFile.path;
   }
 
-  /// Tạo thiết bị (AVD Clone) riêng biệt cho nhân vật theo IP
+  /// Tạo thiết bị (AVD Clone) riêng biệt cho nhân vật theo IP và tên nhân vật
   Future<String> createPersonaDeviceAvd({
     required String ip,
+    String? personaName,
     String? baseAvd,
     void Function(String message)? onProgress,
   }) async {
@@ -1695,7 +1854,7 @@ for root, _, files in os.walk(target_dir):
       targetBase = bestCandidate ?? avds.first;
     }
 
-    final createdName = await _ensurePersonaCloneAvd(targetBase, ip, onProgress: onProgress);
+    final createdName = await _ensurePersonaCloneAvd(targetBase, ip, personaName: personaName, onProgress: onProgress);
     notifyListeners();
     return createdName;
   }
@@ -1799,11 +1958,11 @@ for root, _, files in os.walk(target_dir):
   Future<String> _ensurePersonaCloneAvd(
     String baseAvd,
     String ip, {
+    String? personaName,
     void Function(String message)? onProgress,
   }) async {
     final avdsDir = getAndroidAvdDirectory();
-    final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-    final cloneAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
+    final cloneAvdName = generatePersonaAvdName(ip: ip, personaName: personaName);
 
     final baseAvdDir = Directory(p.join(avdsDir.path, '$baseAvd.avd'));
     final cloneAvdDir = Directory(p.join(avdsDir.path, '$cloneAvdName.avd'));
@@ -2036,10 +2195,17 @@ for root, _, files in os.walk(target_dir):
     String? phoneNumber,
     bool autoSyncPhone = false,
   }) async {
+    // Nếu thiết bị của nhân vật này đang chạy sẵn rồi thì không khởi chạy trùng lặp
+    if (isDeviceRunningForIp(ip)) {
+      debugPrint('[Device] Thiết bị cho IP $ip đang hoạt động sẵn, bỏ qua không mở thêm phiên trùng lặp.');
+      return true;
+    }
+
     Socks5Session? session;
     int? httpProxyPort;
 
-    if (server != null) {
+    final isLocalDirect = ip == '127.0.0.1' || ip == 'localhost';
+    if (server != null && !isLocalDirect) {
       try {
         session = await startSocks5Server(server: server, ip: ip);
       } catch (_) {
@@ -2129,6 +2295,15 @@ for root, _, files in os.walk(target_dir):
       final requestedDir = Directory(p.join(avdsDir.path, '$requestedAvd.avd'));
       if (requestedDir.existsSync()) {
         actualAvd = requestedAvd;
+      }
+    }
+
+    if (actualAvd.isEmpty) {
+      final personaProfile = PersonaService().getPersona(ip);
+      final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
+      final expectedDir = Directory(p.join(avdsDir.path, '$expectedNameAvd.avd'));
+      if (expectedDir.existsSync()) {
+        actualAvd = expectedNameAvd;
       }
     }
 
@@ -2241,8 +2416,23 @@ for root, _, files in os.walk(target_dir):
     int consolePort = 5554;
     for (int pPort = 5554; pPort <= 5584; pPort += 2) {
       if (!_isPortInUse(pPort) && !_isPortInUse(pPort + 1)) {
-        consolePort = pPort;
-        break;
+        bool portAvailable = true;
+        try {
+          final s1 = await Socket.connect('127.0.0.1', pPort, timeout: const Duration(milliseconds: 200));
+          s1.destroy();
+          portAvailable = false;
+        } catch (_) {}
+        if (portAvailable) {
+          try {
+            final s2 = await Socket.connect('127.0.0.1', pPort + 1, timeout: const Duration(milliseconds: 200));
+            s2.destroy();
+            portAvailable = false;
+          } catch (_) {}
+        }
+        if (portAvailable) {
+          consolePort = pPort;
+          break;
+        }
       }
     }
     session.emulatorPort = consolePort;
@@ -2275,9 +2465,14 @@ for root, _, files in os.walk(target_dir):
     ];
 
     try {
+      final env = Map<String, String>.from(Platform.environment);
+      if (!env.containsKey('DISPLAY') || env['DISPLAY']!.isEmpty) {
+        env['DISPLAY'] = ':0';
+      }
       final proc = await Process.start(
         emulatorBin,
         emulatorArgs,
+        environment: env,
         mode: ProcessStartMode.detached,
       );
       session.deviceProcess = proc;
@@ -2519,9 +2714,15 @@ for root, _, files in os.walk(target_dir):
       final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
       final personaProfile = PersonaService().getPersona(ip);
+      final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
       final customAvdName = personaProfile?.avdName?.trim();
-      final targetAvd = (customAvdName != null && customAvdName.isNotEmpty) ? customAvdName : personaAvdName;
-      final activePort = port ?? _findRunningConsolePortForAvd(targetAvd) ?? _findRunningConsolePortForAvd(personaAvdName);
+      final targetAvd = (customAvdName != null && customAvdName.isNotEmpty)
+          ? customAvdName
+          : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
+      final activePort = port ??
+          _findRunningConsolePortForAvd(targetAvd) ??
+          _findRunningConsolePortForAvd(expectedNameAvd) ??
+          _findRunningConsolePortForAvd(personaAvdName);
 
       // 1. Nếu emulator đang chạy, gửi lệnh sync đĩa và yêu cầu thoát an toàn để ghi dữ liệu ứng dụng
       if (activePort != null) {
@@ -2586,6 +2787,39 @@ for root, _, files in os.walk(target_dir):
       _closingDeviceIps.remove(ip);
       notifyListeners();
     }
+  }
+
+  /// Tìm serial ADB (ví dụ emulator-5554 hoặc IP:port) đang chạy cho một IP nhân vật cụ thể
+  Future<String?> getRunningDeviceSerialForIp(String ip) async {
+    final session = _activeSessions[ip];
+    if (session?.remoteDeviceAddress != null && session!.remoteDeviceAddress!.isNotEmpty) {
+      return session.remoteDeviceAddress;
+    }
+    if (session?.emulatorPort != null) {
+      return 'emulator-${session!.emulatorPort}';
+    }
+
+    final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
+    final personaProfile = PersonaService().getPersona(ip);
+    final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
+    final customAvdName = personaProfile?.avdName?.trim();
+    final targetAvd = (customAvdName != null && customAvdName.isNotEmpty)
+        ? customAvdName
+        : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
+
+    final port = _findRunningConsolePortForAvd(targetAvd) ??
+        _findRunningConsolePortForAvd(expectedNameAvd) ??
+        _findRunningConsolePortForAvd(personaAvdName);
+    if (port != null) {
+      return 'emulator-$port';
+    }
+
+    if (personaProfile != null && personaProfile.useExternalDevice && personaProfile.externalDeviceAddress != null) {
+      return personaProfile.externalDeviceAddress;
+    }
+
+    return null;
   }
 
   /// Tìm và cung cấp đường dẫn binary adb (tự động tải và nhúng nếu hệ thống chưa có)

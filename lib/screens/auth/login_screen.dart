@@ -434,36 +434,38 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: AppColors.inputBg,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: AppColors.borderDark),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _selectedServer,
-                                isExpanded: true,
-                                isDense: true,
-                                dropdownColor: const Color(0xFF0F172A),
-                                style: const TextStyle(fontSize: 12.5, color: AppColors.textWhite),
-                                icon: const Icon(Icons.arrow_drop_down, color: AppColors.textDim),
-                                items: _servers.map((s) {
-                                  return DropdownMenuItem<String>(
-                                    value: s['value'],
-                                    child: Text(s['label']!),
-                                  );
-                                }).toList(),
-                                onChanged: (val) {
-                                  if (val != null) {
-                                    setState(() {
-                                      _selectedServer = val;
-                                    });
-                                  }
-                                },
+                          DropdownButtonFormField<String>(
+                            initialValue: _selectedServer,
+                            isExpanded: true,
+                            isDense: true,
+                            dropdownColor: const Color(0xFF0F172A),
+                            style: const TextStyle(fontSize: 13, color: AppColors.textWhite),
+                            icon: const Icon(Icons.arrow_drop_down, color: AppColors.textDim),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              prefixIcon: Icon(
+                                Icons.dns_outlined,
+                                size: 16,
+                                color: AppColors.textDim,
                               ),
                             ),
+                            items: _servers.map((s) {
+                              return DropdownMenuItem<String>(
+                                value: s['value'],
+                                child: Text(
+                                  s['label']!,
+                                  style: const TextStyle(fontSize: 13, color: AppColors.textWhite),
+                                ),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setState(() {
+                                  _selectedServer = val;
+                                });
+                              }
+                            },
                           ),
                         ],
                       ),

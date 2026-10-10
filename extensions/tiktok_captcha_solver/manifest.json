@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "TikTok Auto Captcha Solver",
+  "version": "1.0.0",
+  "description": "Tự động phát hiện và giải mã Captcha xoay vòng tròn ghép hình của TikTok hoàn toàn miễn phí.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.tiktok.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.tiktok.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

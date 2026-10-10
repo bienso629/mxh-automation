@@ -110,6 +110,11 @@ jobs:
           productbuild --component "$APP_PATH" /Applications --sign "$INSTALLER_CERT" --keychain "$KEYCHAIN_PATH" dist-macos/agent_mxh_auto.pkg
           echo "Created installer package: dist-macos/agent_mxh_auto.pkg"
 
+          # Create zip for manual direct use
+          cd "$(dirname "$APP_PATH")"
+          zip -r -y "$GITHUB_WORKSPACE/dist-macos/agent_mxh_auto_macos.zip" "$(basename "$APP_PATH")"
+          cd "$GITHUB_WORKSPACE"
+
       - name: Upload to TestFlight via altool
         env:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -121,13 +126,14 @@ jobs:
             --type macos \
             --apiKey "$KEY_ID" \
             --apiIssuer "$ISSUER_ID" \
-            --show-progress
+            --show-progress || echo "TestFlight upload step finished with warnings/errors."
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macOS-TestFlight-Package
+          name: macOS-Build-Package
           path: |
             dist-macos/*.pkg
+            dist-macos/*.zip
           retention-days: 7

@@ -45,6 +45,8 @@ import argparse
 import subprocess
 import time
 import urllib.request
+import re
+import base64
 
 HOME = os.path.expanduser("~")
 DATA_DIR = os.path.join(HOME, ".agent_mxh_auto") if os.path.exists(os.path.join(HOME, ".agent_mxh_auto")) else os.path.join(HOME, ".tadu_ai_agent")
@@ -52,29 +54,83 @@ PERSONAS_FILE = os.path.join(DATA_DIR, "personas.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 IPC_SOCKET_PORT = 19898  # Optional IPC port if agent daemon is listening
 
+def _remove_vietnamese_diacritics(text):
+    if not text:
+        return ""
+    import unicodedata
+    # Bảng thay thế ký tự tiếng Việt có dấu
+    v_map = {
+        'a': 'áàảãạăắằẳẵặâấầẩẫậ',
+        'A': 'ÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬ',
+        'd': 'đ', 'D': 'Đ',
+        'e': 'éèẻẽẹêếềểễệ',
+        'E': 'ÉÈẺẼẸÊẾỀỂỄỆ',
+        'i': 'íìỉĩị', 'I': 'ÍÌỈĨỊ',
+        'o': 'óòỏõọôốồổỗộơớờởỡợ',
+        'O': 'ÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢ',
+        'u': 'úùủũụưứừửữự',
+        'U': 'ÚÙỦŨỤƯỨỪỬỮỰ',
+        'y': 'ýỳỷỹỵ', 'Y': 'ÝỲỶỸỴ'
+    }
+    res = text
+    for char, accents in v_map.items():
+        for acc in accents:
+            res = res.replace(acc, char)
+    return res
+
+def _generate_persona_avd_name(ip, persona_name=None):
+    clean_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', ip)
+    if persona_name and persona_name.strip():
+        no_dia = _remove_vietnamese_diacritics(persona_name.strip())
+        slug = re.sub(r'[^a-zA-Z0-9_-]+', '_', no_dia)
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        if slug:
+            return f"Pixel_10_Pro_persona_{slug}"
+    return f"Pixel_10_Pro_persona_{clean_ip}"
+
+def _load_profiles():
+    # Tìm kiếm các file personas.json và personas_<user>.json trong DATA_DIR
+    res = {}
+    if os.path.exists(PERSONAS_FILE):
+        try:
+            with open(PERSONAS_FILE, "r", encoding="utf-8") as f:
+                res.update(json.load(f))
+        except Exception:
+            pass
+    try:
+        if os.path.exists(DATA_DIR):
+            for fname in os.listdir(DATA_DIR):
+                if fname.startswith("personas_") and fname.endswith(".json"):
+                    fpath = os.path.join(DATA_DIR, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            d = json.load(f)
+                            if isinstance(d, dict):
+                                res.update(d)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return res
+
 def list_profiles():
-    if not os.path.exists(PERSONAS_FILE):
+    data = _load_profiles()
+    if not data:
         print(json.dumps([]))
         return
-    try:
-        with open(PERSONAS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            profiles = []
-            for ip, p in data.items():
-                profiles.append({
-                    "ip": ip,
-                    "name": p.get("name", "Unknown"),
-                    "gender": p.get("gender", ""),
-                    "age": p.get("age", 25),
-                    "bio": p.get("bio", ""),
-                    "device_type": p.get("device_type", "mobile"),
-                    "avd_name": p.get("avd_name"),
-                    "external_device_address": p.get("external_device_address")
-                })
-            print(json.dumps(profiles, ensure_ascii=False, indent=2))
-    except Exception as e:
-        print(f"Error reading personas: {e}", file=sys.stderr)
-        sys.exit(1)
+    profiles = []
+    for ip, p in data.items():
+        profiles.append({
+            "ip": ip,
+            "name": p.get("name", "Unknown"),
+            "gender": p.get("gender", ""),
+            "age": p.get("age", 25),
+            "bio": p.get("bio", ""),
+            "device_type": p.get("device_type", "mobile"),
+            "avd_name": p.get("avd_name"),
+            "external_device_address": p.get("external_device_address")
+        })
+    print(json.dumps(profiles, ensure_ascii=False, indent=2))
 
 def _decrypt_vault_value(val):
     if not val or not isinstance(val, str) or not val.startswith("enc:"):
@@ -413,12 +469,22 @@ def open_device(ip, device_type="mobile", avd_name=None):
     sanitized_ip = ip.replace(".", "_").replace(":", "_")
     target_avd = avd_name
     if not target_avd:
-        persona_avd_name = f"Pixel_10_Pro_persona_{sanitized_ip}"
+        profiles = _load_profiles()
+        p_profile = profiles.get(ip, {})
+        persona_name = p_profile.get("name")
+        custom_avd = p_profile.get("avd_name")
+        name_avd = _generate_persona_avd_name(ip, persona_name)
+        ip_avd = f"Pixel_10_Pro_persona_{sanitized_ip}"
+        
         try:
             res = subprocess.run([sdk_emulator, "-list-avds"], stdout=subprocess.PIPE, text=True, check=False)
             avds = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-            if persona_avd_name in avds:
-                target_avd = persona_avd_name
+            if custom_avd and custom_avd in avds:
+                target_avd = custom_avd
+            elif name_avd in avds:
+                target_avd = name_avd
+            elif ip_avd in avds:
+                target_avd = ip_avd
             elif avds:
                 target_avd = avds[0]
         except Exception:
@@ -474,9 +540,11 @@ def open_device(ip, device_type="mobile", avd_name=None):
     console_port = 5554
     for p in range(5554, 5586, 2):
         s1 = socket.socket()
+        s1.settimeout(0.2)
         r1 = s1.connect_ex(("127.0.0.1", p))
         s1.close()
         s2 = socket.socket()
+        s2.settimeout(0.2)
         r2 = s2.connect_ex(("127.0.0.1", p + 1))
         s2.close()
         if r1 != 0 and r2 != 0:
@@ -489,7 +557,7 @@ def open_device(ip, device_type="mobile", avd_name=None):
         "-port", str(console_port),
         "-netdelay", "none",
         "-netspeed", "full",
-        "-gpu", "host",
+        "-gpu", "auto",
         "-no-boot-anim"
     ]
     if http_proxy_port:
@@ -615,6 +683,170 @@ def close_device(ip=None):
         except Exception as e:
             print(f"Lỗi tắt máy ảo: {e}", file=sys.stderr)
 
+def get_device_serial_for_ip(ip):
+    sanitized_ip = ip.replace(".", "_").replace(":", "_")
+    profiles = _load_profiles()
+    p_profile = profiles.get(ip, {})
+    persona_name = p_profile.get("name")
+    custom_avd = p_profile.get("avd_name")
+    name_avd = _generate_persona_avd_name(ip, persona_name)
+    ip_avd = f"Pixel_10_Pro_persona_{sanitized_ip}"
+    valid_avds = set(filter(None, [custom_avd, name_avd, ip_avd]))
+
+    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
+    if not os.path.exists(sdk_adb): sdk_adb = "adb"
+    
+    # 1. Kiểm tra device meta
+    dev_meta = os.path.join(DATA_DIR, "tmp", f"device_{sanitized_ip}.json")
+    if os.path.exists(dev_meta):
+        try:
+            with open(dev_meta, "r", encoding="utf-8") as f:
+                cport = json.load(f).get("console_port")
+                if cport:
+                    test_serial = f"emulator-{cport}"
+                    chk = subprocess.run([sdk_adb, "-s", test_serial, "get-state"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if "device" in chk.stdout:
+                        return test_serial
+        except Exception:
+            pass
+            
+    # 2. Quét adb devices khớp AVD
+    try:
+        res = subprocess.run([sdk_adb, "devices"], stdout=subprocess.PIPE, text=True, check=False)
+        for line in res.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[0].startswith("emulator-") and parts[1] == "device":
+                serial = parts[0]
+                name_res = subprocess.run([sdk_adb, "-s", serial, "emu", "avd", "name"], stdout=subprocess.PIPE, text=True, check=False)
+                emu_avd = name_res.stdout.splitlines()[0].strip() if name_res.stdout else ""
+                if emu_avd in valid_avds:
+                    return serial
+    except Exception:
+        pass
+    return None
+
+def fast_action(ips, platform="facebook", action="like", url=None, comment=None):
+    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
+    if not os.path.exists(sdk_adb): sdk_adb = "adb"
+    
+    profiles = _load_profiles()
+    target_serials = {}
+    
+    # Bước 1: Khởi chạy và thu thập serial của TOÀN BỘ các thiết bị trước
+    for ip in ips:
+        p_info = profiles.get(ip, {})
+        p_name = p_info.get("name", ip)
+        serial = get_device_serial_for_ip(ip)
+        if not serial:
+            print(f"Thiết bị cho {p_name} ({ip}) chưa bật. Đang khởi chạy...")
+            open_device(ip)
+        else:
+            target_serials[ip] = serial
+            
+    # Bước 2: Chờ tất cả thiết bị boot xong và online
+    for ip in ips:
+        if ip in target_serials:
+            continue
+        p_info = profiles.get(ip, {})
+        p_name = p_info.get("name", ip)
+        serial = None
+        for _ in range(25):
+            time.sleep(2)
+            serial = get_device_serial_for_ip(ip)
+            if serial:
+                b_res = subprocess.run([sdk_adb, "-s", serial, "shell", "getprop", "sys.boot_completed"], stdout=subprocess.PIPE, text=True, check=False)
+                if b_res.stdout.strip() == "1":
+                    break
+        if serial:
+            target_serials[ip] = serial
+        else:
+            print(f"Không thể kết nối hoặc khởi chạy thiết bị cho {p_name} ({ip})!", file=sys.stderr)
+            
+    # Bước 3: Thực thi thao tác macro cho từng thiết bị
+    for ip in ips:
+        serial = target_serials.get(ip)
+        p_info = profiles.get(ip, {})
+        p_name = p_info.get("name", ip)
+        if not serial:
+            print(f"Bỏ qua {p_name} ({ip}) do thiết bị không khả dụng.")
+            continue
+            
+        print(f"--- Đang thực thi macro {action} ({platform}) cho {p_name} ({ip}) trên {serial} ---")
+            
+        # Lấy kích thước màn hình
+        width, height = 1080, 1920
+        try:
+            sz_res = subprocess.run([sdk_adb, "-s", serial, "shell", "wm", "size"], stdout=subprocess.PIPE, text=True, check=False)
+            m = re.search(r"([0-9]+)x([0-9]+)", sz_res.stdout)
+            if m:
+                width, height = int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+            
+        # Mở link nếu có
+        if url:
+            if platform == "facebook":
+                subprocess.run([sdk_adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, "com.facebook.katana"], check=False)
+            elif platform == "tiktok":
+                subprocess.run([sdk_adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, "com.zhiliaoapp.musically"], check=False)
+            else:
+                subprocess.run([sdk_adb, "-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], check=False)
+            time.sleep(2)
+            
+            # Xử lý pop-up nếu có
+            try:
+                win_res = subprocess.run([sdk_adb, "-s", serial, "shell", "dumpsys", "window"], stdout=subprocess.PIPE, text=True, check=False)
+                if "ResolverActivity" in win_res.stdout:
+                    subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(int(width * 0.75)), str(int(height * 0.65))], check=False)
+                    time.sleep(0.5)
+            except Exception:
+                pass
+                
+        # Tìm macro lưu riêng hoặc dùng tọa độ chuẩn
+        macro_map = p_info.get("automation_macros", {})
+        macro = macro_map.get(f"{platform}_{action}") or macro_map.get(f"{platform}_like")
+        if macro and "x_percent" in macro and "y_percent" in macro:
+            tap_x = int(width * float(macro["x_percent"]))
+            tap_y = int(height * float(macro["y_percent"]))
+        else:
+            if platform == "facebook":
+                tap_x = int(width * 0.941)
+                tap_y = int(height * 0.596)
+            elif platform == "tiktok":
+                tap_x = int(width * 0.930)
+                tap_y = int(height * 0.540)
+            else:
+                tap_x = int(width * 0.5)
+                tap_y = int(height * 0.5)
+                
+        # Tap like
+        if action in ["like", "like_and_comment"]:
+            if platform == "tiktok":
+                cx, cy = int(width * 0.5), int(height * 0.5)
+                subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(cx), str(cy)], check=False)
+                time.sleep(0.1)
+                subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(cx), str(cy)], check=False)
+            else:
+                subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(tap_x), str(tap_y)], check=False)
+            time.sleep(0.8)
+            print(f"Đã bấm LIKE thành công trên thiết bị {serial} ({p_name}) tại tọa độ ({tap_x}, {tap_y})")
+            
+        # Comment nếu có
+        if action in ["comment", "like_and_comment"]:
+            c_btn_x, c_btn_y = int(width * 0.941), int(height * 0.685)
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(c_btn_x), str(c_btn_y)], check=False)
+            time.sleep(1.2)
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(int(width * 0.4)), str(int(height * 0.95))], check=False)
+            time.sleep(0.6)
+            c_text = comment if comment else "Bài viết rất hay!"
+            b64_txt = base64.b64encode(c_text.encode("utf-8")).decode("utf-8")
+            subprocess.run([sdk_adb, "-s", serial, "shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", b64_txt], check=False)
+            esc_txt = c_text.replace(" ", "%s").replace("'", "\\'")
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "text", esc_txt], check=False)
+            time.sleep(0.5)
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "keyevent", "66"], check=False)
+            print(f"Đã gửi bình luận thành công trên thiết bị {serial} ({p_name})")
+
 def main():
     parser = argparse.ArgumentParser(description="MXH Auto CLI Tool for Local CLI Agents")
     subparsers = parser.add_subparsers(dest="command")
@@ -635,13 +867,24 @@ def main():
 
     # open-device
     p_dev = subparsers.add_parser("open-device", help="Khởi chạy máy ảo Android")
-    p_dev.add_argument("--ip", required=True, help="IP nhân vật")
+    p_dev.add_argument("--ip", help="IP nhân vật")
+    p_dev.add_argument("--ips", nargs="+", help="Danh sách các IP nhân vật")
     p_dev.add_argument("--type", default="mobile", help="Loại thiết bị: mobile hoặc tablet")
     p_dev.add_argument("--avd", help="Tên máy ảo AVD")
 
     # close-device
     p_cdev = subparsers.add_parser("close-device", help="Tắt máy ảo Android")
     p_cdev.add_argument("--ip", help="IP nhân vật")
+    p_cdev.add_argument("--ips", nargs="+", help="Danh sách các IP nhân vật")
+
+    # fast-action
+    p_act = subparsers.add_parser("fast-action", help="Tự động tương tác siêu tốc (like, comment) trên app cho nhân vật")
+    p_act.add_argument("--ip", help="IP nhân vật")
+    p_act.add_argument("--ips", nargs="+", help="Danh sách các IP nhân vật")
+    p_act.add_argument("--platform", default="facebook", choices=["facebook", "tiktok"], help="Nền tảng MXH")
+    p_act.add_argument("--action", default="like", choices=["like", "comment", "like_and_comment"], help="Hành động")
+    p_act.add_argument("--url", help="URL video/bài viết")
+    p_act.add_argument("--comment", help="Nội dung bình luận")
 
     args = parser.parse_args()
     if args.command == "list-profiles":
@@ -657,9 +900,28 @@ def main():
         if args.ips: ips.extend(args.ips)
         close_browser(ips)
     elif args.command == "open-device":
-        open_device(args.ip, args.type, args.avd)
+        ips = []
+        if args.ip: ips.append(args.ip)
+        if args.ips: ips.extend(args.ips)
+        for ip in ips:
+            open_device(ip, args.type, args.avd)
     elif args.command == "close-device":
-        close_device(args.ip)
+        ips = []
+        if args.ip: ips.append(args.ip)
+        if args.ips: ips.extend(args.ips)
+        if ips:
+            for ip in ips:
+                close_device(ip)
+        else:
+            close_device(None)
+    elif args.command == "fast-action":
+        ips = []
+        if args.ip: ips.append(args.ip)
+        if args.ips: ips.extend(args.ips)
+        if not ips:
+            print("Lỗi: Cần cung cấp --ip hoặc --ips", file=sys.stderr)
+            sys.exit(1)
+        fast_action(ips, args.platform, args.action, args.url, args.comment)
     else:
         parser.print_help()
 
@@ -695,11 +957,16 @@ if __name__ == "__main__":
     buffer.writeln('3. Đóng trình duyệt của nhân vật:');
     buffer.writeln('   $helperPath close-browser --ip <IP>');
     buffer.writeln('   $helperPath close-browser --ips <IP1> <IP2> ...');
-    buffer.writeln('4. Mở thiết bị máy ảo Android cho nhân vật:');
+    buffer.writeln('4. Mở thiết bị máy ảo Android cho nhân vật (hỗ trợ cả --ip và --ips):');
     buffer.writeln('   $helperPath open-device --ip <IP>');
+    buffer.writeln('   $helperPath open-device --ips <IP1> <IP2> ...');
     buffer.writeln('5. Đóng thiết bị máy ảo Android:');
     buffer.writeln('   $helperPath close-device --ip <IP>');
-    buffer.writeln('6. Tra cứu danh sách nhân vật:');
+    buffer.writeln('   $helperPath close-device --ips <IP1> <IP2> ...');
+    buffer.writeln('6. TƯƠNG TÁC TỰ ĐỘNG SIÊU TỐC TRÊN APP (Like / Comment Facebook, TikTok):');
+    buffer.writeln('   $helperPath fast-action --ips <IP1> <IP2> ... --platform <facebook|tiktok> --action <like|comment|like_and_comment> --url <URL>');
+    buffer.writeln('   (Lệnh fast-action tự động mở thiết bị nếu chưa mở, mở app vào đúng ảnh/video và bấm like siêu tốc cho tất cả IP).');
+    buffer.writeln('7. Tra cứu danh sách nhân vật:');
     buffer.writeln('   $helperPath list-profiles');
     buffer.writeln('');
 
@@ -713,6 +980,12 @@ if __name__ == "__main__":
         if (ipStr != null && !scopeIps.contains(ipStr)) {
           scopeIps.add(ipStr);
         }
+      }
+    }
+    // Fallback: Nếu workingDir không có hoặc không trích xuất đủ IP, lấy từ PersonaService activeScopeIps
+    for (final activeIp in _personaService.activeScopeIps) {
+      if (!scopeIps.contains(activeIp)) {
+        scopeIps.add(activeIp);
       }
     }
 
@@ -744,20 +1017,34 @@ if __name__ == "__main__":
     buffer.writeln('  Khi chạy lệnh `open-device --ip <IP>`, hệ thống tự động khởi tạo hầm SOCKS5 SSH, kích hoạt HTTP bridge và cấu hình proxy toàn phần (Android Emulator flag `-http-proxy` và ADB global proxy `10.0.2.2:<port>`). Tất cả lưu lượng mạng của máy ảo đều đi qua IP sạch của nhân vật đó.');
     buffer.writeln('  Khi chạy `close-device --ip <IP>`, hệ thống tự động tắt máy ảo, gỡ proxy và dọn dẹp hầm SSH tương ứng.');
     buffer.writeln('');
-    if (scopeIps.length > 1) {
-      buffer.writeln('- QUAN TRỌNG: Người dùng đang chọn ${scopeIps.length} nhân vật trong Scope (${scopeIps.join(', ')}).');
-      buffer.writeln('- Khi người dùng bảo mở link, xem link, hoặc làm việc chung mà KHÔNG chỉ định đích danh 1 ai: BẮT BUỘC phải mở trình duyệt cho TOÀN BỘ ${scopeIps.length} nhân vật bằng cách truyền toàn bộ danh sách IP vào tham số `--ips`:');
-      buffer.writeln('  Lệnh mẫu: $helperPath open-browser --ips ${scopeIps.join(' ')} --url <URL>');
-      buffer.writeln('- TUYỆT ĐỐI KHÔNG được chỉ chọn 1 người đầu tiên mà bỏ quên các nhân vật còn lại trong Scope.');
-    } else if (scopeIps.length == 1) {
-      buffer.writeln('- Scope hiện tại chỉ chọn đúng 1 nhân vật: IP ${scopeIps.first}. BẮT BUỘC chỉ mở 1 trình duyệt cho IP này:');
-      buffer.writeln('  Lệnh mẫu: $helperPath open-browser --ip ${scopeIps.first} --url <URL>');
+    final isDeviceTarget = workingDir != null && (workingDir.contains('THIẾT BỊ / DEVICE') || workingDir.contains('open_profile_device'));
+    if (isDeviceTarget) {
+      buffer.writeln('- CHẾ ĐỘ THỰC THI HIỆN TẠI ĐƯỢC CHỈ ĐỊNH: THIẾT BỊ / MÁY ẢO ANDROID (AVD).');
+      buffer.writeln('  TUYỆT ĐỐI KHÔNG SỬ DỤNG `open-browser` vì người dùng đang yêu cầu chạy trên Thiết bị / Android Emulator.');
+      if (scopeIps.isNotEmpty) {
+        buffer.writeln('  QUAN TRỌNG: Scope có ${scopeIps.length} nhân vật (${scopeIps.join(', ')}).');
+        buffer.writeln('  BẮT BUỘC PHẢI THỰC THI TÁC VỤ CHO TOÀN BỘ ${scopeIps.length} NHÂN VẬT, TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ CHẠY 1 NGƯỜI.');
+        buffer.writeln('  + Nếu người dùng yêu cầu tương tác (like, comment, xem video) trên app Facebook/TikTok:');
+        buffer.writeln('    Chạy ngay: $helperPath fast-action --ips ${scopeIps.join(' ')} --platform <facebook|tiktok> --action like --url <URL>');
+        buffer.writeln('  + Nếu người dùng chỉ muốn mở máy ảo thiết bị:');
+        buffer.writeln('    Chạy ngay: $helperPath open-device --ips ${scopeIps.join(' ')}');
+      }
     } else {
-      buffer.writeln('- Khi người dùng yêu cầu mở trình duyệt, xem link hoặc auto tương tác, BẮT BUỘC phải chạy lệnh `$helperPath open-browser` bằng terminal.');
+      if (scopeIps.length > 1) {
+        buffer.writeln('- QUAN TRỌNG: Người dùng đang chọn ${scopeIps.length} nhân vật trong Scope (${scopeIps.join(', ')}).');
+        buffer.writeln('- Khi người dùng bảo mở link, xem link, hoặc làm việc chung mà KHÔNG chỉ định đích danh 1 ai: BẮT BUỘC phải mở trình duyệt cho TOÀN BỘ ${scopeIps.length} nhân vật bằng cách truyền toàn bộ danh sách IP vào tham số `--ips`:');
+        buffer.writeln('  Lệnh mẫu: $helperPath open-browser --ips ${scopeIps.join(' ')} --url <URL>');
+        buffer.writeln('- TUYỆT ĐỐI KHÔNG được chỉ chọn 1 người đầu tiên mà bỏ quên các nhân vật còn lại trong Scope.');
+      } else if (scopeIps.length == 1) {
+        buffer.writeln('- Scope hiện tại chỉ chọn đúng 1 nhân vật: IP ${scopeIps.first}. BẮT BUỘC chỉ mở 1 trình duyệt cho IP này:');
+        buffer.writeln('  Lệnh mẫu: $helperPath open-browser --ip ${scopeIps.first} --url <URL>');
+      } else {
+        buffer.writeln('- Khi người dùng yêu cầu mở trình duyệt, xem link hoặc auto tương tác, BẮT BUỘC phải chạy lệnh `$helperPath open-browser` bằng terminal.');
+      }
     }
-    buffer.writeln('- BẮT BUỘC phải thực thi lệnh terminal thực tế để mở cửa sổ trình duyệt trên màn hình người dùng.');
+    buffer.writeln('- BẮT BUỘC phải thực thi lệnh terminal thực tế để mở cửa sổ trên màn hình người dùng.');
     buffer.writeln('- TUYỆT ĐỐI KHÔNG giải thích vòng vo về headless mode hay khuyên người dùng tự mở lệnh.');
-    buffer.writeln('- Sau khi thực thi lệnh, hãy báo cáo chi tiết danh sách tất cả các nhân vật/IP đã được mở trình duyệt thành công.');
+    buffer.writeln('- Sau khi thực thi lệnh, hãy báo cáo chi tiết danh sách tất cả các nhân vật/IP đã được mở thành công.');
     buffer.writeln('');
     buffer.writeln('QUY TẮC ĐỌC BÀI BÁO & XEM VIDEO TRÊN WEBSITE (AGENT RULES):');
     buffer.writeln('1. Khi đọc bài báo: Mở bằng profile của nhân vật, đóng quảng cáo pop-up, cuộn đọc từng đoạn với độ trễ tự nhiên (3-8 giây mỗi đoạn), cuộn tối thiểu 70% trang, trích xuất luận điểm chính.');

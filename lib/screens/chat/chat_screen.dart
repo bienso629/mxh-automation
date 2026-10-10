@@ -34,6 +34,7 @@ class _ChatScreenState extends State<ChatScreen> {
   List<PersonaProfile> _selectedPersonasScope = [];
   final List<AttachmentItem> _attachedFiles = [];
   bool _isDeviceExecutionMode = false; // false: Trình duyệt (Browser), true: Thiết bị (Device/AVD)
+  final PersonaService _personaService = PersonaService();
 
   int _inputCharCount = 0;
   static const int _maxInputChars = 100000;
@@ -52,6 +53,15 @@ class _ChatScreenState extends State<ChatScreen> {
       final chat = context.read<ChatProvider>();
       final server = context.read<ServerProvider>();
       server.loadServers();
+      _personaService.loadSavedPersonas().then((map) {
+        if (mounted && _personaService.activeScopeIps.isNotEmpty && _selectedPersonasScope.isEmpty) {
+          setState(() {
+            _selectedPersonasScope = map.values
+                .where((p) => _personaService.activeScopeIps.contains(p.ip))
+                .toList();
+          });
+        }
+      }).catchError((_) {});
       _api.getConfig().then((cfg) {
         if (cfg['default_execution_mode'] != null && mounted) {
           setState(() {
@@ -391,13 +401,35 @@ class _ChatScreenState extends State<ChatScreen> {
       buffer.writeln();
     }
 
-    // Đính kèm chỉ thị môi trường thực thi được lựa chọn từ Switch ở Prompt bar
-    if (_isDeviceExecutionMode) {
+    // Luôn đồng bộ cấu hình môi trường thực thi mới nhất từ LocalConfigService nếu chưa chọn thủ công
+    bool effectiveDeviceMode = _isDeviceExecutionMode;
+    try {
+      final latestCfg = await _api.getConfig();
+      if (latestCfg['default_execution_mode'] != null) {
+        final cfgMode = latestCfg['default_execution_mode'].toString().trim().toLowerCase();
+        if (cfgMode == 'device') {
+          effectiveDeviceMode = true;
+          if (!_isDeviceExecutionMode && mounted) {
+            setState(() => _isDeviceExecutionMode = true);
+          }
+        } else if (cfgMode == 'browser') {
+          // Chỉ fallback nếu người dùng chưa bật nút thiết bị
+          if (!_isDeviceExecutionMode) {
+            effectiveDeviceMode = false;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Đính kèm chỉ thị môi trường thực thi được lựa chọn
+    if (effectiveDeviceMode) {
       buffer.writeln('[YÊU CẦU MÔI TRƯỜNG THỰC THI: THIẾT BỊ / DEVICE / AVD / ANDROID]');
-      buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên thiết bị di động / máy ảo Android (sử dụng open_profile_device).');
+      buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên thiết bị di động / máy ảo Android (sử dụng open_profile_device hoặc lệnh terminal mxh-tool open-device).');
+      buffer.writeln('- TUYỆT ĐỐI KHÔNG mở trình duyệt Chrome/Chromium (open_profile_browser). Mọi thao tác phải chạy trên Thiết bị / Android Emulator.');
     } else {
       buffer.writeln('[YÊU CẦU MÔI TRƯỜNG THỰC THI: TRÌNH DUYỆT / BROWSER]');
-      buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên trình duyệt độc lập (sử dụng open_profile_browser).');
+      buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên trình duyệt độc lập (sử dụng open_profile_browser hoặc lệnh terminal mxh-tool open-browser).');
+      buffer.writeln('- TUYỆT ĐỐI KHÔNG mở máy ảo AVD / thiết bị Android (open_profile_device).');
     }
 
     scopePayload = buffer.toString().trim();
@@ -420,6 +452,7 @@ class _ChatScreenState extends State<ChatScreen> {
           setState(() {
             _selectedPersonasScope = selectedList;
           });
+          _personaService.setActiveScopeIps(selectedList.map((p) => p.ip));
           if (selectedList.isNotEmpty) {
             AppToast.success(context, 'Đã chọn ${selectedList.length} nhân vật cho hội thoại');
           } else {
@@ -751,6 +784,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 label: 'Đăng bài',
                 prompt: 'Hãy soạn và đăng bài viết mới dựa trên phong cách của các nhân vật trong scope',
                 chat: chat,
+                serverProvider: serverProvider,
               ),
             ],
           ),
@@ -799,7 +833,7 @@ class _ChatScreenState extends State<ChatScreen> {
     required ServerProvider serverProvider,
   }) {
     final linkController = TextEditingController();
-    bool isDeviceMode = false; // false: Trình duyệt (Browser), true: Thiết bị (Device/AVD)
+    bool isDeviceMode = _isDeviceExecutionMode; // Kế thừa chế độ đang chọn từ thanh công cụ/cấu hình
 
     showDialog(
       context: context,
@@ -1003,6 +1037,7 @@ class _ChatScreenState extends State<ChatScreen> {
     required String label,
     required String prompt,
     required ChatProvider chat,
+    required ServerProvider serverProvider,
   }) {
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
@@ -1014,7 +1049,30 @@ class _ChatScreenState extends State<ChatScreen> {
       icon: Icon(icon, size: 14, color: iconColor),
       label: Text(label, style: const TextStyle(fontSize: 11.5, color: AppColors.textBody)),
       onPressed: () {
-        chat.sendMessage(prompt);
+        final buffer = StringBuffer();
+        if (_selectedPersonasScope.isNotEmpty) {
+          buffer.writeln('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH (SCOPE PERSONAS) ===');
+          for (final p in _selectedPersonasScope) {
+            buffer.writeln('- IP: ${p.ip} | Họ tên: ${p.name} | Tuổi: ${p.age} | Giới tính: ${p.gender} | Bio: ${p.bio}');
+          }
+          buffer.writeln();
+        }
+        if (_isDeviceExecutionMode) {
+          buffer.writeln('[YÊU CẦU MÔI TRƯỜNG THỰC THI: THIẾT BỊ / DEVICE / AVD / ANDROID]');
+          buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên thiết bị di động / máy ảo Android (sử dụng open_profile_device).');
+          buffer.writeln('- TUYỆT ĐỐI KHÔNG mở trình duyệt Chrome/Chromium (open_profile_browser).');
+        } else {
+          buffer.writeln('[YÊU CẦU MÔI TRƯỜNG THỰC THI: TRÌNH DUYỆT / BROWSER]');
+          buffer.writeln('- BẮT BUỘC thực hiện tác vụ trên trình duyệt độc lập (sử dụng open_profile_browser).');
+          buffer.writeln('- TUYỆT ĐỐI KHÔNG mở máy ảo AVD / thiết bị Android (open_profile_device).');
+        }
+        final scopePayload = buffer.toString().trim();
+
+        chat.sendMessage(
+          prompt,
+          model: serverProvider.currentAiModel,
+          workingDir: scopePayload,
+        );
         _safeScrollToBottom();
       },
     );
@@ -1088,6 +1146,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             setState(() {
                               _selectedPersonasScope.clear();
                             });
+                            _personaService.clearActiveScope();
                           },
                           child: const Icon(Icons.close_rounded, size: 14, color: AppColors.danger),
                         ),
@@ -1122,6 +1181,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   setState(() {
                                     _selectedPersonasScope.removeWhere((item) => item.ip == p.ip);
                                   });
+                                  _personaService.setActiveScopeIps(_selectedPersonasScope.map((e) => e.ip));
                                 },
                                 child: const Icon(Icons.close_rounded, size: 14, color: AppColors.textMuted),
                               ),
@@ -1300,6 +1360,52 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       ),
                       onPressed: _pickFiles,
+                    ),
+                    const SizedBox(width: 8),
+                    // Quick Toggle Chế độ Thực thi: Thiết bị (Device / AVD) vs Trình duyệt (Browser)
+                    Tooltip(
+                      message: _isDeviceExecutionMode
+                          ? 'Đang chọn: Thiết bị (Device / AVD). Bấm để chuyển sang Trình duyệt (Browser)'
+                          : 'Đang chọn: Trình duyệt (Browser). Bấm để chuyển sang Thiết bị (Device / AVD)',
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(
+                            color: _isDeviceExecutionMode ? Colors.purpleAccent : AppColors.primaryLight.withValues(alpha: 0.5),
+                          ),
+                          backgroundColor: _isDeviceExecutionMode
+                              ? Colors.purpleAccent.withValues(alpha: 0.18)
+                              : AppColors.primary.withValues(alpha: 0.08),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                        ),
+                        icon: Icon(
+                          _isDeviceExecutionMode ? Icons.phone_android_rounded : Icons.open_in_browser_rounded,
+                          size: 14,
+                          color: _isDeviceExecutionMode ? Colors.purpleAccent : AppColors.primaryLight,
+                        ),
+                        label: Text(
+                          _isDeviceExecutionMode ? 'Thiết bị (Device)' : 'Trình duyệt',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _isDeviceExecutionMode ? Colors.purpleAccent : AppColors.primaryLight,
+                          ),
+                        ),
+                        onPressed: () async {
+                          final nextVal = !_isDeviceExecutionMode;
+                          setState(() {
+                            _isDeviceExecutionMode = nextVal;
+                          });
+                          try {
+                            final cfg = await _api.getConfig();
+                            cfg['default_execution_mode'] = nextVal ? 'device' : 'browser';
+                            await _api.saveConfig(cfg);
+                            if (mounted) {
+                              AppToast.info(context, nextVal ? 'Đã kích hoạt chế độ: Chạy trên Thiết bị (Device / AVD)' : 'Đã kích hoạt chế độ: Chạy trên Trình duyệt (Browser)');
+                            }
+                          } catch (_) {}
+                        },
+                      ),
                     ),
                   ],
                 ),
@@ -1791,7 +1897,7 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
               children: [
                 Expanded(
                   child: Container(
-                    height: 36,
+                    height: 38,
                     decoration: BoxDecoration(
                       color: AppColors.inputBg,
                       borderRadius: BorderRadius.circular(6),

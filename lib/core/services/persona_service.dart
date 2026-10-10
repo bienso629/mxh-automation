@@ -14,19 +14,33 @@ class PersonaService {
   final LocalConfigService _configService = LocalConfigService();
   final DatabaseService _dbService = DatabaseService();
   final Map<String, PersonaProfile> _cachedPersonas = {};
+  final Set<String> _activeScopeIps = {};
   String? _currentUserKey;
   bool _isLoaded = false;
+
+  Set<String> get activeScopeIps => Set.unmodifiable(_activeScopeIps);
+
+  void setActiveScopeIps(Iterable<String> ips) {
+    _activeScopeIps.clear();
+    _activeScopeIps.addAll(ips);
+  }
+
+  void clearActiveScope() {
+    _activeScopeIps.clear();
+  }
 
   void switchUser(String? userKey) {
     if (_currentUserKey != userKey) {
       _currentUserKey = userKey;
       _cachedPersonas.clear();
+      _activeScopeIps.clear();
       _isLoaded = false;
     }
   }
 
   void clearCache() {
     _cachedPersonas.clear();
+    _activeScopeIps.clear();
     _isLoaded = false;
   }
 
@@ -160,6 +174,40 @@ class PersonaService {
 
   Map<String, PersonaProfile> get allPersonas => Map.unmodifiable(_cachedPersonas);
 
+  /// Lấy macro tự động hóa của nhân vật theo IP và actionKey (ví dụ: 'facebook_like', 'tiktok_like')
+  Map<String, dynamic>? getMacroForPersona(String ip, String actionKey) {
+    final persona = _cachedPersonas[ip];
+    if (persona?.automationMacros != null && persona!.automationMacros!.containsKey(actionKey)) {
+      final val = persona.automationMacros![actionKey];
+      if (val is Map) return Map<String, dynamic>.from(val);
+    }
+    return null;
+  }
+
+  /// Cập nhật macro tự động hóa và độ phân giải màn hình cho riêng nhân vật theo IP
+  Future<bool> saveMacroForPersona({
+    required String ip,
+    required String actionKey,
+    required Map<String, dynamic> macroData,
+    String? resolution,
+  }) async {
+    final persona = _cachedPersonas[ip];
+    if (persona == null) return false;
+
+    final updatedMacros = Map<String, dynamic>.from(persona.automationMacros ?? {});
+    updatedMacros[actionKey] = {
+      ...macroData,
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+
+    final updatedProfile = persona.copyWith(
+      automationMacros: updatedMacros,
+      deviceResolution: (resolution != null && resolution.isNotEmpty) ? resolution : persona.deviceResolution,
+    );
+
+    return await updatePersona(updatedProfile);
+  }
+
   Future<Map<String, PersonaProfile>> generatePersonas({
     required List<String> ips,
     String? model,
@@ -180,7 +228,7 @@ Mỗi nhân vật phải gồm:
 - bio: Mô tả cá tính, tính cách, sở thích và phong cách sống (khoảng 1 - 2 câu súc tích)
 - email: Địa chỉ email tự nhiên phù hợp với tên nhân vật (ví dụ: nam.nguyenhoang98@gmail.com, triet.leminh89@outlook.com...)
 - agent_info: Vai trò, nhiệm vụ chính của nhân vật này trong hệ thống MXH (ví dụ: "Seeding bài viết ẩm thực, bình luận chia sẻ kinh nghiệm quán ăn, tạo tương tác tự nhiên với khách hàng", hoặc "Review đồ công nghệ, trả lời giải đáp thắc mắc người xem livestream", hoặc "Chăm sóc khách hàng, tương tác thân thiện trong group cộng đồng"...)
-- avatar_prompt: Một prompt chi tiết bằng tiếng Anh chuyên dùng cho AI vẽ ảnh (Midjourney/FLUX/Stable Diffusion) để tạo chân dung cận cảnh avatar cho nhân vật này. ĐẶC BIỆT: Prompt ảnh BẮT BUỘC PHẢI THỂ HIỆN RÕ CÁ TÍNH, VAI TRÒ VÀ NHIỆM VỤ của nhân vật từ bio và agent_info (ví dụ về trang phục, biểu cảm khuôn mặt, ánh mắt, bối cảnh làm việc hoặc môi trường phù hợp với vai trò của họ). Ví dụ: "Close-up portrait of a 24-year-old Vietnamese female food reviewer, vibrant cheerful expression, stylish casual hoodie, holding a subtle coffee cup, blurred modern cafe background with warm bokeh lights, cinematic sunlight, hyperrealistic 8k".
+- avatar_prompt: Một prompt chi tiết bằng tiếng Anh chuyên dùng cho AI vẽ ảnh (Midjourney/FLUX/Stable Diffusion) để tạo chân dung cận cảnh avatar cho nhân vật này. ĐẶC BIỆT: Yêu cầu ảnh chụp cận cảnh khuôn mặt (close-up headshot portrait focusing strictly on facial features, eyes, and natural expression), phản ánh đúng giới tính, độ tuổi, cá tính từ bio và nghề nghiệp/vai trò từ agent_info, không có watermark, không có logo hay chữ. Ví dụ: "Close-up headshot portrait photo of a 24-year-old Vietnamese female food reviewer, friendly warm smile, natural skin texture, beautiful expressive eyes, blurred coffee shop background, soft morning sunlight, cinematic lighting, 8k resolution, authentic photography, no watermark, no text".
 
 BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markdown hoặc chỉ bọc trong ```json ... ```):
 [
@@ -356,31 +404,98 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
       }
     } catch (_) {}
 
-    // Xây dựng prompt avatar người thật chụp ảnh chân dung (Photorealistic Portrait Photo)
-    String effectivePrompt;
+    // Xây dựng prompt avatar AI cận cảnh tập trung vào khuôn mặt (Close-up face portrait)
+    // Tận dụng chính xác các thông tin: Tên, Tuổi, Giới tính, Cá tính (Bio), Vai trò (Agent Info) và avatarPrompt
+    final genderEn = persona.gender.toLowerCase() == 'nữ' ? 'Vietnamese woman' : 'Vietnamese man';
+    final ageText = '${persona.age} years old';
+    final nameContext = persona.name.isNotEmpty ? 'named ${persona.name}' : '';
+    final bioContext = persona.bio.trim().isNotEmpty ? ', personality: ${persona.bio.trim()}' : '';
+    final roleContext = (persona.agentInfo != null && persona.agentInfo!.trim().isNotEmpty)
+        ? ', profession/role: ${persona.agentInfo!.trim()}'
+        : '';
+
+    String promptCore;
     if (persona.avatarPrompt.trim().isNotEmpty) {
-      effectivePrompt = persona.avatarPrompt.trim();
-      final extraDetails = <String>[];
-      if (persona.bio.trim().isNotEmpty && !effectivePrompt.toLowerCase().contains(persona.bio.toLowerCase().split(' ').first)) {
-        extraDetails.add('personality: ${persona.bio.trim()}');
-      }
-      if (persona.agentInfo != null && persona.agentInfo!.trim().isNotEmpty && !effectivePrompt.toLowerCase().contains(persona.agentInfo!.toLowerCase().split(' ').first)) {
-        extraDetails.add('role: ${persona.agentInfo!.trim()}');
-      }
-      if (extraDetails.isNotEmpty) {
-        effectivePrompt = '$effectivePrompt, ${extraDetails.join(", ")}';
-      }
-      effectivePrompt += ', authentic realistic human portrait photography, real person face, natural skin texture, 35mm photograph, DSLR, soft natural studio lighting, ultra-realistic, highly detailed, high quality photo, NO 3D render, NO cartoon, NO illustration, NO vector icon, NO drawing';
+      promptCore = persona.avatarPrompt.trim();
     } else {
-      final roleContext = (persona.agentInfo != null && persona.agentInfo!.trim().isNotEmpty)
-          ? ', role: ${persona.agentInfo!.trim()}'
-          : '';
-      final bioContext = persona.bio.trim().isNotEmpty ? ', personality: ${persona.bio.trim()}' : '';
-      effectivePrompt = 'Authentic close-up photography portrait of a real ${persona.gender.toLowerCase() == "nữ" ? "Vietnamese woman" : "Vietnamese man"}, ${persona.age} years old, name ${persona.name}$bioContext$roleContext, beautiful natural facial features, real human skin pores and texture, natural casual outfit, cinematic bokeh background, captured on Canon EOS R5 85mm lens, photorealistic 8k, ultra-realistic photo, NO 3D render, NO cartoon, NO anime, NO vector graphics, NO CGI';
+      promptCore = 'A realistic detailed close-up face portrait of a $genderEn, $ageText$nameContext$bioContext$roleContext';
     }
 
-    // 1. NHÁNH CLOUD API PROXY: Thử gọi Cloud Image Model qua mitom.ai (DALL-E / FLUX / Wan / Doubao Image)
+    // Luôn định hướng trọng tâm vào khuôn mặt (headshot, facial features, eyes, expression)
+    final effectivePrompt = '$promptCore, headshot portrait, looking directly at camera, detailed facial features, realistic human skin texture, natural expression, focused on face, soft natural cinematic lighting, 8k resolution, photorealistic, sharp focus, masterpiece, authentic photo, NO watermark, NO logo, NO text, NO signature, NO cartoon, NO anime, NO 3D render, NO illustration';
+
+    String lastError = '';
+
+    // 1. ƯU TIÊN TUYỆT ĐỐI MODEL AI gemini-nano-banana-2.1 (Chat Multimodal Output 2K)
+    // Sinh ảnh chân dung 2K siêu nét, chuẩn tỷ lệ 1:1, không watermark, không logo
     if (apiKey.isNotEmpty) {
+      try {
+        final chatUri = Uri.parse('$baseUrl/chat/completions');
+        final promptForGemini = 'A 1:1 square headshot avatar portrait photo of a $genderEn named ${persona.name}, ${persona.age} years old$bioContext$roleContext. Showing full face from forehead to chin, looking directly into camera with natural facial expression, realistic detailed skin pores and eyes, studio lighting, ultra-sharp 2K 2048x2048 resolution masterpiece, clean background, no watermark, no text, no logo.';
+        
+        final res = await http.post(
+          chatUri,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': 'Bearer $apiKey',
+          },
+          body: jsonEncode({
+            'model': 'gemini-nano-banana-2.1',
+            'messages': [
+              {'role': 'user', 'content': promptForGemini},
+            ],
+            'modalities': ['text', 'image'],
+          }),
+        ).timeout(const Duration(seconds: 120));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(utf8.decode(res.bodyBytes));
+          final choices = data['choices'] as List<dynamic>?;
+          if (choices != null && choices.isNotEmpty) {
+            final content = choices[0]['message']?['content']?.toString() ?? '';
+            
+            // Tìm chuỗi base64 qua data:image
+            const marker = 'data:image/';
+            final markerIdx = content.indexOf(marker);
+            if (markerIdx != -1) {
+              final base64Marker = ';base64,';
+              final b64Start = content.indexOf(base64Marker, markerIdx);
+              if (b64Start != -1) {
+                final contentStart = b64Start + base64Marker.length;
+                // Tìm ký tự kết thúc như ')', '"', '\n', hoặc hết chuỗi
+                var contentEnd = content.length;
+                for (var i = contentStart; i < content.length; i++) {
+                  final code = content.codeUnitAt(i);
+                  if (code == 41 || code == 34 || code == 39 || code == 10 || code == 13 || code == 32) { // ), ", ', \n, \r, space
+                    contentEnd = i;
+                    break;
+                  }
+                }
+                var rawB64 = content.substring(contentStart, contentEnd).replaceAll(RegExp(r'\s+'), '');
+                while (rawB64.length % 4 != 0) {
+                  rawB64 += '=';
+                }
+                final bytes = base64Decode(rawB64);
+                if (bytes.length > 5000) {
+                  await File(localImagePath).writeAsBytes(bytes);
+                  final updated = persona.copyWith(avatarUrl: localImagePath);
+                  await updatePersona(updated);
+                  return localImagePath;
+                }
+              }
+            }
+          } else {
+            lastError = 'Server trả về choices rỗng';
+          }
+        } else {
+          lastError = 'HTTP ${res.statusCode}: ${res.body}';
+        }
+      } catch (e) {
+        lastError = e.toString();
+      }
+
+      // Thử tiếp các model Image qua images/generations với chuẩn 2K/1024
       final imageModels = [
         'qwen-image-3.0',
         'wan2.7-image',
@@ -402,10 +517,10 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
               'model': modelName,
               'prompt': effectivePrompt,
               'n': 1,
-              'size': '512x512',
+              'size': '2048x2048',
               'response_format': 'b64_json',
             }),
-          ).timeout(const Duration(seconds: 40));
+          ).timeout(const Duration(seconds: 60));
 
           if (res.statusCode == 200) {
             final data = jsonDecode(utf8.decode(res.bodyBytes));
@@ -422,7 +537,7 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
                 }
               } else if (first['url'] != null) {
                 final imgUrl = first['url'].toString();
-                final dlRes = await http.get(Uri.parse(imgUrl)).timeout(const Duration(seconds: 25));
+                final dlRes = await http.get(Uri.parse(imgUrl)).timeout(const Duration(seconds: 30));
                 if (dlRes.statusCode == 200 && dlRes.bodyBytes.length > 3000) {
                   await File(localImagePath).writeAsBytes(dlRes.bodyBytes);
                   final updated = persona.copyWith(avatarUrl: localImagePath);
@@ -436,61 +551,6 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
       }
     }
 
-    // 2. ENGINE AI PHOTO SYNTHESIS (FLUX & TURBO PHOTOREALISTIC ENGINE)
-    // Tạo ảnh chân dung người thật bằng mô hình khuếch tán AI chuyên ảnh thực (FLUX / Turbo / Photo Real)
-    final aiPhotoModels = ['flux', 'turbo'];
-    final seed = '${persona.ip}_${persona.name}_${persona.gender}_$timestamp'.hashCode.abs();
-
-    for (final aiModelName in aiPhotoModels) {
-      try {
-        final promptForGen = Uri.encodeComponent(effectivePrompt);
-        final aiGenUrl = 'https://image.pollinations.ai/prompt/$promptForGen?width=512&height=512&nologo=true&seed=$seed&model=$aiModelName&enhance=true';
-        final genRes = await http.get(
-          Uri.parse(aiGenUrl),
-          headers: {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64)'},
-        ).timeout(const Duration(seconds: 35));
-
-        if (genRes.statusCode == 200 && genRes.bodyBytes.length > 5000) {
-          await File(localImagePath).writeAsBytes(genRes.bodyBytes);
-          final updated = persona.copyWith(avatarUrl: localImagePath);
-          await updatePersona(updated);
-          return localImagePath;
-        }
-      } catch (_) {}
-    }
-
-    // 3. DỰ PHÒNG CHÂN DUNG NGƯỜI THẬT CHUYÊN DỤNG (Tuyệt đối không dùng 3D vector cartoon)
-    // Sử dụng bộ sinh ảnh khuôn mặt người thật ngẫu nhiên từ kho ảnh chân dung thực tế
-    try {
-      final genderParam = persona.gender.toLowerCase() == 'nữ' ? 'female' : 'male';
-      final faceIndex = (seed % 90) + 1;
-      final realHumanFaceUrl = 'https://xsgames.co/randomusers/assets/avatars/$genderParam/$faceIndex.jpg';
-      final dlFace = await http.get(Uri.parse(realHumanFaceUrl)).timeout(const Duration(seconds: 15));
-      if (dlFace.statusCode == 200 && dlFace.bodyBytes.length > 3000) {
-        await File(localImagePath).writeAsBytes(dlFace.bodyBytes);
-        final updated = persona.copyWith(avatarUrl: localImagePath);
-        await updatePersona(updated);
-        return localImagePath;
-      }
-    } catch (_) {}
-
-    // Fallback ảnh chân dung người thật Unsplash AI curated portrait
-    final isFemale = persona.gender.toLowerCase() == 'nữ';
-    final photoFallbackUrl = isFemale
-        ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=512&q=80'
-        : 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=512&q=80';
-    try {
-      final dlPhoto = await http.get(Uri.parse(photoFallbackUrl)).timeout(const Duration(seconds: 15));
-      if (dlPhoto.statusCode == 200 && dlPhoto.bodyBytes.length > 3000) {
-        await File(localImagePath).writeAsBytes(dlPhoto.bodyBytes);
-        final updated = persona.copyWith(avatarUrl: localImagePath);
-        await updatePersona(updated);
-        return localImagePath;
-      }
-    } catch (_) {}
-
-    final updated = persona.copyWith(avatarUrl: photoFallbackUrl);
-    await updatePersona(updated);
-    return photoFallbackUrl;
+    throw Exception('Không thể tạo ảnh bằng model AI gemini-nano-banana-2.1. Chi tiết: ${lastError.isNotEmpty ? lastError : "Chưa cấu hình API Key hoặc Proxy không phản hồi."}');
   }
 }

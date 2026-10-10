@@ -15,6 +15,8 @@ class PersonaProfile {
   final String? phoneNumber; // Số điện thoại gắn với nhân vật (từ SMSPool hoặc nhập tay)
   final bool autoSyncPhoneToDevice; // Switch tự động gắn số điện thoại vào thiết bị ngoại vi
   final String? smsOrderId; // Mã đơn hàng SMSPool (nếu có thuê qua SMSPool)
+  final String? deviceResolution; // Độ phân giải màn hình đã ghi nhận (ví dụ '1080x1920')
+  final Map<String, dynamic>? automationMacros; // Bộ nhớ macro tự động hóa riêng biệt của nhân vật
 
   PersonaProfile({
     required this.ip,
@@ -33,6 +35,8 @@ class PersonaProfile {
     this.phoneNumber,
     this.autoSyncPhoneToDevice = false,
     this.smsOrderId,
+    this.deviceResolution,
+    this.automationMacros,
   });
 
   PersonaProfile copyWith({
@@ -52,6 +56,8 @@ class PersonaProfile {
     String? phoneNumber,
     bool? autoSyncPhoneToDevice,
     String? smsOrderId,
+    String? deviceResolution,
+    Map<String, dynamic>? automationMacros,
     bool clearSmsOrderId = false,
     bool clearAvdName = false,
     bool clearPhoneNumber = false,
@@ -75,6 +81,8 @@ class PersonaProfile {
       phoneNumber: clearPhoneNumber ? null : (phoneNumber ?? this.phoneNumber),
       autoSyncPhoneToDevice: autoSyncPhoneToDevice ?? this.autoSyncPhoneToDevice,
       smsOrderId: clearSmsOrderId ? null : (smsOrderId ?? this.smsOrderId),
+      deviceResolution: deviceResolution ?? this.deviceResolution,
+      automationMacros: automationMacros ?? this.automationMacros,
     );
   }
 
@@ -95,24 +103,35 @@ class PersonaProfile {
     'phone_number': phoneNumber,
     'auto_sync_phone_to_device': autoSyncPhoneToDevice ? 1 : 0,
     'sms_order_id': smsOrderId,
+    'device_resolution': deviceResolution,
+    'automation_macros': automationMacros,
   };
 
-  factory PersonaProfile.fromJson(Map<String, dynamic> json) => PersonaProfile(
-    ip: json['ip']?.toString() ?? '',
-    name: json['name']?.toString() ?? '',
-    age: (json['age'] is num) ? (json['age'] as num).toInt() : (int.tryParse(json['age']?.toString() ?? '') ?? 25),
-    gender: json['gender']?.toString() ?? 'Nam',
-    bio: json['bio']?.toString() ?? '',
-    avatarPrompt: json['avatar_prompt']?.toString() ?? json['avatarPrompt']?.toString() ?? '',
-    avatarUrl: json['avatar_url']?.toString() ?? json['avatarUrl']?.toString(),
-    externalDeviceAddress: json['external_device_address']?.toString(),
-    useExternalDevice: json['use_external_device'] == 1 || json['use_external_device'] == true,
-    avdName: json['avd_name']?.toString(),
-    deviceType: json['device_type']?.toString() ?? 'mobile',
-    agentInfo: json['agent_info']?.toString(),
-    email: json['email']?.toString(),
-    phoneNumber: json['phone_number']?.toString(),
-    autoSyncPhoneToDevice: json['auto_sync_phone_to_device'] == 1 || json['auto_sync_phone_to_device'] == true,
-    smsOrderId: json['sms_order_id']?.toString(),
-  );
+  factory PersonaProfile.fromJson(Map<String, dynamic> json) {
+    Map<String, dynamic>? parsedMacros;
+    if (json['automation_macros'] is Map) {
+      parsedMacros = Map<String, dynamic>.from(json['automation_macros'] as Map);
+    }
+
+    return PersonaProfile(
+      ip: json['ip']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      age: (json['age'] is num) ? (json['age'] as num).toInt() : (int.tryParse(json['age']?.toString() ?? '') ?? 25),
+      gender: json['gender']?.toString() ?? 'Nam',
+      bio: json['bio']?.toString() ?? '',
+      avatarPrompt: json['avatar_prompt']?.toString() ?? json['avatarPrompt']?.toString() ?? '',
+      avatarUrl: json['avatar_url']?.toString() ?? json['avatarUrl']?.toString(),
+      externalDeviceAddress: json['external_device_address']?.toString(),
+      useExternalDevice: json['use_external_device'] == 1 || json['use_external_device'] == true,
+      avdName: json['avd_name']?.toString(),
+      deviceType: json['device_type']?.toString() ?? 'mobile',
+      agentInfo: json['agent_info']?.toString(),
+      email: json['email']?.toString(),
+      phoneNumber: json['phone_number']?.toString(),
+      autoSyncPhoneToDevice: json['auto_sync_phone_to_device'] == 1 || json['auto_sync_phone_to_device'] == true,
+      smsOrderId: json['sms_order_id']?.toString(),
+      deviceResolution: json['device_resolution']?.toString(),
+      automationMacros: parsedMacros,
+    );
+  }
 }
