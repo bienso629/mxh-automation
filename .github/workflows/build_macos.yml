@@ -81,7 +81,8 @@ jobs:
 
       - name: Build macOS Archive
         run: |
-          flutter build macos --release --config-only || true
+          BUILD_NUM=${GITHUB_RUN_NUMBER:-1}
+          flutter build macos --release --config-only --build-name=1.0.0 --build-number=$BUILD_NUM || true
           xcodebuild -workspace macos/Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
