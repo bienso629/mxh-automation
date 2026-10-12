@@ -182,7 +182,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         return StatefulBuilder(
           builder: (context, setModalState) {
-            // Tự động kiểm tra trạng thái service khi mở modal chỉnh sửa máy chủ
+            // Tự động kiểm tra trạng thái service khi mở modal chỉnh sửa Sân khấu
             if (isCheckingStatus && !hasCheckedService && existing != null && existing.serverIp.isNotEmpty) {
               Future.microtask(() async {
                 try {
@@ -217,7 +217,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Icon(Icons.dns_rounded, color: AppColors.primaryLight, size: 22),
                   const SizedBox(width: 8),
-                  Text(existing != null ? 'Chỉnh Sửa Máy Chủ' : 'Thêm Máy Chủ Mới'),
+                  Text(existing != null ? 'Chỉnh Sửa Sân Khấu' : 'Thêm Sân Khấu Mới'),
                 ],
               ),
               content: Column(
@@ -234,7 +234,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   TextField(
                     controller: ipCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'Địa Chỉ IP Máy Chủ',
+                      labelText: 'Địa Chỉ IP Sân Khấu',
                       prefixIcon: Icon(Icons.public_rounded, size: 18),
                     ),
                   ),
@@ -382,7 +382,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       : () async {
                                           final host = ipCtrl.text.trim();
                                           if (host.isEmpty) {
-                                            AppToast.error(ctx, 'Vui lòng nhập IP máy chủ!');
+                                            AppToast.error(ctx, 'Vui lòng nhập IP Sân khấu!');
                                             return;
                                           }
                                           setModalState(() {
@@ -443,7 +443,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       : () async {
                                           final host = ipCtrl.text.trim();
                                           if (host.isEmpty) {
-                                            AppToast.error(ctx, 'Vui lòng nhập IP máy chủ!');
+                                            AppToast.error(ctx, 'Vui lòng nhập IP Sân khấu!');
                                             return;
                                           }
                                           setModalState(() {
@@ -514,7 +514,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       : () async {
                           final host = ipCtrl.text.trim();
                           if (host.isEmpty) {
-                            AppToast.error(ctx, 'Vui lòng nhập IP máy chủ để kiểm tra!');
+                            AppToast.error(ctx, 'Vui lòng nhập IP Sân khấu để kiểm tra!');
                             return;
                           }
                           setModalState(() {
@@ -560,7 +560,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: () async {
                     final ip = ipCtrl.text.trim();
                     if (ip.isEmpty) {
-                      AppToast.error(context, 'Vui lòng nhập Địa chỉ IP máy chủ');
+                      AppToast.error(context, 'Vui lòng nhập Địa chỉ IP Sân khấu');
                       return;
                     }
                     final newServer = ServerModel(
@@ -581,13 +581,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     final ok = await srvProvider.addOrUpdateServer(newServer);
                     if (rootCtx.mounted) {
                       if (ok) {
-                        AppToast.success(rootCtx, 'Đã lưu thông tin máy chủ!');
+                        AppToast.success(rootCtx, 'Đã lưu thông tin Sân khấu!');
                       } else {
-                        AppToast.error(rootCtx, 'Lưu thông tin máy chủ thất bại');
+                        AppToast.error(rootCtx, 'Lưu thông tin Sân khấu thất bại');
                       }
                     }
                   },
-                  child: const Text('Lưu Máy Chủ'),
+                  child: const Text('Lưu Sân Khấu'),
                 ),
               ],
             );
@@ -607,11 +607,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 22),
             SizedBox(width: 8),
-            Text('Xác Nhận Xóa Máy Chủ'),
+            Text('Xác Nhận Xóa Sân Khấu'),
           ],
         ),
         content: Text(
-          'Bạn có chắc chắn muốn xóa máy chủ "${server.name}" (${server.serverIp}:${server.sshPort}) khỏi danh sách kết nối không?',
+          'Bạn có chắc chắn muốn xóa Sân khấu "${server.name}" (${server.serverIp}:${server.sshPort}) khỏi danh sách kết nối không?',
           style: const TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
@@ -626,9 +626,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               final ok = await context.read<ServerProvider>().deleteServer(server.id);
               if (mounted) {
                 if (ok) {
-                  AppToast.info(context, 'Đã xóa máy chủ "${server.name}"');
+                  AppToast.info(context, 'Đã xóa Sân khấu "${server.name}"');
                 } else {
-                  AppToast.error(context, 'Không thể xóa máy chủ');
+                  AppToast.error(context, 'Không thể xóa Sân khấu');
                 }
               }
             },
@@ -670,11 +670,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Quản Lý Đa Máy Chủ & Cấu Hình AI',
+                          'Quản Lý Đa Sân Khấu & Cấu Hình AI',
                           style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                         ),
                         Text(
-                          'Thêm, sửa, chuyển đổi máy chủ SSH Remote và cấu hình AI Model (${serverProvider.currentAiModel})',
+                          'Thêm, sửa, chuyển đổi Sân khấu SSH Remote và cấu hình AI Model (${serverProvider.currentAiModel})',
                           style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
                         ),
                       ],
@@ -690,14 +690,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       ),
                       icon: const Icon(Icons.file_upload_outlined, size: 16),
-                      label: const Text('Import Server', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      label: const Text('Import Sân Khấu', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                       onPressed: () => _handleImportServerPackage(),
                     ),
                     const SizedBox(width: 10),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
                       icon: const Icon(Icons.add_rounded, size: 16),
-                      label: const Text('Thêm Máy Chủ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      label: const Text('Thêm Sân Khấu', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                       onPressed: () => _showAddEditServerDialog(),
                     ),
                   ],
@@ -722,7 +722,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const Icon(Icons.lan_rounded, size: 16, color: AppColors.accentCyan),
                           const SizedBox(width: 8),
                           const Text(
-                            '1. Danh Sách Máy Chủ Remote (Multi-Server)',
+                            '1. Danh Sách Sân Khấu Remote (Multi-Server)',
                             style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(width: 8),
@@ -733,7 +733,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               borderRadius: BorderRadius.circular(20),
                             ),
                             child: Text(
-                              '${serverProvider.servers.length} máy chủ',
+                              '${serverProvider.servers.length} Sân khấu',
                               style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppColors.primaryLight),
                             ),
                           ),
@@ -753,7 +753,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: AppColors.borderDark),
                       ),
-                      child: const Text('Chưa có máy chủ nào được thêm', style: TextStyle(color: AppColors.textMuted)),
+                      child: const Text('Chưa có Sân khấu nào được thêm', style: TextStyle(color: AppColors.textMuted)),
                     )
                   else
                     GridView.builder(
@@ -879,7 +879,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                           ),
                                           onPressed: () => serverProvider.selectServer(s),
-                                          child: const Text('Chọn Server', style: TextStyle(fontSize: 11)),
+                                          child: const Text('Chọn Sân Khấu', style: TextStyle(fontSize: 11)),
                                         )
                                       else
                                         const Text('Mặc định', style: TextStyle(fontSize: 11, color: AppColors.accent)),
@@ -904,7 +904,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       ),
                                       IconButton(
                                         icon: const Icon(Icons.delete_outline, size: 16, color: AppColors.danger),
-                                        tooltip: 'Xóa máy chủ',
+                                        tooltip: 'Xóa Sân khấu',
                                         onPressed: () => _showDeleteServerConfirmDialog(s),
                                       ),
                                     ],
@@ -1674,7 +1674,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Backup / Import Máy Chủ: ${server.name}',
+                      'Backup / Import Sân Khấu: ${server.name}',
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1688,7 +1688,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Máy chủ IP: ${server.serverIp} (${ips.length} IPs đi kèm). File backup chứa cấu hình SSH, AI model và toàn bộ Persona profile của dải IP.',
+                'Sân khấu IP: ${server.serverIp} (${ips.length} IPs đi kèm). File backup chứa cấu hình SSH, AI model và toàn bộ Persona profile của dải IP.',
                 style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
               ),
               const SizedBox(height: 16),
@@ -1706,8 +1706,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   child: const Icon(Icons.download_rounded, color: AppColors.accentCyan, size: 20),
                 ),
-                title: const Text('Export Backup Máy Chủ Này', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                subtitle: Text('Lưu file .json chứa cấu hình máy chủ và ${ips.length} IPs/Personas', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                title: const Text('Export Backup Sân Khấu Này', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                subtitle: Text('Lưu file .json chứa cấu hình Sân khấu và ${ips.length} IPs/Personas', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
                 trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
                 onTap: () async {
                   Navigator.pop(bCtx);
@@ -1730,7 +1730,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: const Icon(Icons.upload_file_rounded, color: AppColors.primaryLight, size: 20),
                 ),
                 title: const Text('Import Cấu Hình & Danh Sách IP', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                subtitle: const Text('Chọn file backup .json để ghi đè hoặc nạp thêm IP vào máy chủ này', style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                subtitle: const Text('Chọn file backup .json để ghi đè hoặc nạp thêm IP vào Sân khấu này', style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
                 trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
                 onTap: () async {
                   Navigator.pop(bCtx);
@@ -1769,7 +1769,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final jsonContent = const JsonEncoder.withIndent('  ').convert(payload);
 
       final savePath = await FilePicker.platform.saveFile(
-        dialogTitle: 'Chọn nơi lưu file backup máy chủ',
+        dialogTitle: 'Chọn nơi lưu file backup Sân khấu',
         fileName: fileName,
         type: FileType.custom,
         allowedExtensions: ['json'],
@@ -1783,7 +1783,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await file.writeAsString(jsonContent);
 
       if (mounted) {
-        AppToast.success(context, 'Đã xuất backup máy chủ thành công ra:\n$savePath');
+        AppToast.success(context, 'Đã xuất backup Sân khấu thành công ra:\n$savePath');
       }
     } catch (e) {
       if (mounted) {
@@ -1795,7 +1795,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _handleImportServerPackage({ServerModel? targetServer}) async {
     try {
       final result = await FilePicker.platform.pickFiles(
-        dialogTitle: 'Chọn file backup cấu hình máy chủ (.json)',
+        dialogTitle: 'Chọn file backup cấu hình Sân khấu (.json)',
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
@@ -1823,7 +1823,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final serverProvider = Provider.of<ServerProvider>(context, listen: false);
       final personaService = PersonaService();
 
-      // Trường hợp 1: File chứa cấu hình máy chủ đầy đủ
+      // Trường hợp 1: File chứa cấu hình Sân khấu đầy đủ
       ServerModel? importedServer;
       if (decoded['server'] is Map<String, dynamic>) {
         importedServer = ServerModel.fromJson(decoded['server'] as Map<String, dynamic>);
@@ -1832,7 +1832,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
 
       if (importedServer == null && targetServer == null) {
-        if (mounted) AppToast.error(context, 'File không có thông tin máy chủ để import');
+        if (mounted) AppToast.error(context, 'File không có thông tin Sân khấu để import');
         return;
       }
 
@@ -1840,7 +1840,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? importedServer.copyWith(id: targetServer.id, serverIp: targetServer.serverIp)
           : (importedServer ?? targetServer!);
 
-      // Lưu/Cập nhật máy chủ
+      // Lưu/Cập nhật Sân khấu
       await serverProvider.addOrUpdateServer(serverToSave);
 
       // Lưu các persona và danh sách IP đi kèm
@@ -1873,12 +1873,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         AppToast.success(
           context,
-          'Import thành công máy chủ "${serverToSave.name}" kèm $importedIpsCount IP nhân vật!',
+          'Import thành công Sân khấu "${serverToSave.name}" kèm $importedIpsCount IP nhân vật!',
         );
       }
     } catch (e) {
       if (mounted) {
-        AppToast.error(context, 'Lỗi import máy chủ: $e');
+        AppToast.error(context, 'Lỗi import Sân khấu: $e');
       }
     }
   }

@@ -61,7 +61,7 @@ class DocsScreen extends StatelessWidget {
                   iconColor: AppColors.accent,
                   title: '2. Tương tác với Trợ lý AI',
                   content:
-                      '• Trợ lý AI hỗ trợ điều khiển, giám sát và thực thi lệnh Linux an toàn trên hệ thống máy chủ.\n'
+                      '• Trợ lý AI hỗ trợ điều khiển, giám sát và thực thi lệnh Linux an toàn trên hệ thống Sân khấu.\n'
                       '• Hỗ trợ quản lý session hội thoại, ghim những cuộc trò chuyện quan trọng và tra cứu lịch sử.',
                 ),
                 const SizedBox(height: 16),
@@ -79,7 +79,7 @@ class DocsScreen extends StatelessWidget {
                   iconColor: AppColors.warning,
                   title: '4. Cấu hình hệ thống',
                   content:
-                      '• Mục "Cấu hình" cho phép tùy chỉnh AI Model, Base URL, API Key và thông số máy chủ.\n'
+                      '• Mục "Cấu hình" cho phép tùy chỉnh AI Model, Base URL, API Key và thông số Sân khấu.\n'
                       '• Kiểm tra trạng thái kết nối SSH và quản lý dịch vụ nền theo thời gian thực.',
                 ),
               ],

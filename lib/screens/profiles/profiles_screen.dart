@@ -2477,7 +2477,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     final existingIps = allIpCards.map((e) => e.ip).toSet();
     final defaultServer = selectedServer ?? (servers.isNotEmpty ? servers.first : ServerModel(
       id: 'srv_default',
-      name: 'Máy chủ hồ sơ',
+      name: 'Sân khấu hồ sơ',
       serverIp: '127.0.0.1',
     ));
 
@@ -2534,8 +2534,8 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                       const SizedBox(height: 2),
                       Text(
                         selectedServer != null
-                            ? 'Danh sách các IP trỏ vào VPS máy chủ [${selectedServer.name}] (${selectedServer.serverIp})'
-                            : 'Danh sách các đầu IP đang trỏ vào hệ thống máy chủ SSH',
+                            ? 'Danh sách các IP trỏ vào VPS Sân khấu [${selectedServer.name}] (${selectedServer.serverIp})'
+                            : 'Danh sách các đầu IP đang trỏ vào hệ thống Sân khấu SSH',
                         style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -2642,7 +2642,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                         Icon(Icons.contact_mail_outlined, size: 54, color: AppColors.textDim.withValues(alpha: 0.5)),
                         const SizedBox(height: 14),
                         const Text(
-                          'Chưa tìm thấy IP nào trỏ vào máy chủ',
+                          'Chưa tìm thấy IP nào trỏ vào Sân khấu',
                           style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textWhite),
                         ),
                         const SizedBox(height: 6),

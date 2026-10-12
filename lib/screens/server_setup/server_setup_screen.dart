@@ -41,7 +41,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
     AppToast.info(context, 'Đang gửi lệnh $actionLabel dịch vụ...');
 
     final res = await _api.executeServiceAction('ai-agent', action);
-    final output = res['output']?.toString() ?? res['message']?.toString() ?? 'Không có phản hồi từ máy chủ';
+    final output = res['output']?.toString() ?? res['message']?.toString() ?? 'Không có phản hồi từ Sân khấu';
     final msg = res['message']?.toString() ?? output;
 
     if (action == 'status') {
@@ -99,7 +99,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
     setState(() {
       _isDeploying = true;
       _deployLogs.clear();
-      _deployLogs.add('⚡ Bắt đầu tự động thiết lập & Deploy Agent lên máy chủ...');
+      _deployLogs.add('⚡ Bắt đầu tự động thiết lập & Deploy Agent lên Sân khấu...');
     });
 
     _deploySub?.cancel();
@@ -163,7 +163,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Quản Lý Máy Chủ & Dịch Vụ Systemd',
+                          'Quản Lý Sân Khấu & Dịch Vụ Systemd',
                           style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                         ),
                         Text(
@@ -258,7 +258,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: _buildStatusCard(
-                          title: 'Địa chỉ Máy Chủ',
+                          title: 'Địa chỉ Sân Khấu',
                           icon: Icons.public_rounded,
                           iconColor: AppColors.accentCyan,
                           value: _isPrivacyMode ? '103.***.***.***' : (s?.serverIp ?? '127.0.0.1'),
@@ -460,7 +460,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen> {
 
                   // 4. Server Resource Metrics (CPU, RAM, DISK, NETWORK)
                   const Text(
-                    'Tài Nguyên Máy Chủ Đám Mây',
+                    'Tài Nguyên Sân Khấu Đám Mây',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 12),

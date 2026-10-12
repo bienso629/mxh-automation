@@ -24,7 +24,7 @@ class ServersScreen extends StatelessWidget {
           children: [
             const Icon(Icons.dns_rounded, color: AppColors.primaryLight, size: 22),
             const SizedBox(width: 8),
-            Text(existing != null ? 'Chỉnh Sửa Máy Chủ' : 'Thêm Máy Chủ Mới'),
+            Text(existing != null ? 'Chỉnh Sửa Sân Khấu' : 'Thêm Sân Khấu Mới'),
           ],
         ),
         content: Column(
@@ -32,7 +32,7 @@ class ServersScreen extends StatelessWidget {
           children: [
             TextField(
               controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'Tên Máy Chủ (Ví dụ: Web Production)'),
+              decoration: const InputDecoration(labelText: 'Tên Sân Khấu (Ví dụ: Web Production)'),
             ),
             const SizedBox(height: 10),
             TextField(
@@ -100,11 +100,11 @@ class ServersScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Danh Sách Máy Chủ VPS', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        title: const Text('Danh Sách Sân Khấu VPS', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
             icon: const Icon(Icons.add_rounded),
-            tooltip: 'Thêm Server',
+            tooltip: 'Thêm Sân Khấu',
             onPressed: () => _showAddServerDialog(context),
           ),
         ],
@@ -118,11 +118,11 @@ class ServersScreen extends StatelessWidget {
                     children: [
                       const Icon(Icons.dns_outlined, size: 54, color: AppColors.textDim),
                       const SizedBox(height: 12),
-                      const Text('Chưa có máy chủ nào', style: TextStyle(color: AppColors.textMuted)),
+                      const Text('Chưa có Sân khấu nào', style: TextStyle(color: AppColors.textMuted)),
                       const SizedBox(height: 16),
                       ElevatedButton.icon(
                         icon: const Icon(Icons.add),
-                        label: const Text('Thêm Máy Chủ VPS'),
+                        label: const Text('Thêm Sân Khấu VPS'),
                         onPressed: () => _showAddServerDialog(context),
                       ),
                     ],
@@ -206,7 +206,7 @@ class ServersScreen extends StatelessWidget {
                                       children: [
                                         Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 22),
                                         SizedBox(width: 8),
-                                        Text('Xóa Máy Chủ?'),
+                                        Text('Xóa Sân Khấu?'),
                                       ],
                                     ),
                                     content: Text('Bạn có chắc muốn xóa "${s.name}"?'),

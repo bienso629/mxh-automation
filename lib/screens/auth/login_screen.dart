@@ -426,7 +426,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Máy chủ xác thực (Server)',
+                            'Sân khấu xác thực',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,

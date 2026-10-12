@@ -23,7 +23,7 @@ class DashboardScreen extends StatelessWidget {
             Text(
               serverProvider.selectedServer != null
                   ? '${serverProvider.selectedServer!.name} (${serverProvider.selectedServer!.serverIp})'
-                  : 'Chưa kết nối máy chủ',
+                  : 'Chưa kết nối Sân khấu',
               style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
             ),
           ],
@@ -153,7 +153,7 @@ class DashboardScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        serverProvider.selectedServer?.name ?? 'Máy Chủ Linux',
+                        serverProvider.selectedServer?.name ?? 'Sân Khấu Linux',
                         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                       ),
                       Text(

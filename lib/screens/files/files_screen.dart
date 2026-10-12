@@ -54,7 +54,7 @@ class _FilesScreenState extends State<FilesScreen> {
             Text(
               serverProvider.selectedServer != null
                   ? '${serverProvider.selectedServer!.name} (${serverProvider.selectedServer!.serverIp})'
-                  : 'Chưa chọn máy chủ',
+                  : 'Chưa chọn Sân khấu',
               style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
             ),
           ],
