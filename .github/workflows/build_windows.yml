@@ -51,6 +51,7 @@ jobs:
         run: |
           $isccCandidates = @(
             (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+            "C:\ProgramData\chocolatey\bin\iscc.exe",
             "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
             "C:\Program Files\Inno Setup 6\ISCC.exe"
           )
@@ -64,7 +65,7 @@ jobs:
             }
             Write-Host "Setup installer created at dist-flutter\MXH-Tu-Dong-Setup-x64.exe"
           } else {
-            Write-Warning "Inno Setup compiler (ISCC.exe) not found!"
+            throw "Inno Setup compiler (ISCC.exe) not found! Cannot build setup exe."
           }
 
       - name: Upload Artifacts
