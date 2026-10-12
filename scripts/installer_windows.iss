@@ -1,7 +1,7 @@
 ; Script tạo bộ cài đặt Windows Installer (Setup .exe) bằng Inno Setup
-; Dành cho ứng dụng MXH tự động (agent_mxh_auto)
+; Dành cho ứng dụng Diễn viên phim trên MXH (agent_mxh_auto)
 
-#define MyAppName "MXH Tự Động"
+#define MyAppName "Diễn viên phim trên MXH"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Tadu Cloud Team"
 #define MyAppURL "https://tadu.vn"

@@ -254,7 +254,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'MXH tự động',
+                              'Diễn viên phim trên MXH',
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.bold,
@@ -481,7 +481,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                         children: [
                           Icon(Icons.shield_rounded, size: 14, color: AppColors.accent),
                           SizedBox(width: 6),
-                          Text('MXH tự động Desktop', style: TextStyle(fontSize: 11, color: AppColors.textDim)),
+                          Text('Diễn viên phim trên MXH', style: TextStyle(fontSize: 11, color: AppColors.textDim)),
                         ],
                       ),
                       Text('v1.3.0', style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: AppColors.textDim)),
@@ -562,7 +562,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           ],
         ),
         content: const Text(
-          'Bạn có chắc chắn muốn đăng xuất khỏi tài khoản MXH tự động?',
+          'Bạn có chắc chắn muốn đăng xuất khỏi tài khoản Diễn viên phim trên MXH?',
           style: TextStyle(fontSize: 13, color: AppColors.textBody),
         ),
         actions: [

@@ -47,7 +47,7 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "Phần mềm AI quản lý MXH tự động");
+    gtk_header_bar_set_title(header_bar, "Diễn viên phim trên MXH");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
 
     GtkCssProvider* provider = gtk_css_provider_new();
@@ -81,7 +81,7 @@ static void my_application_activate(GApplication* application) {
 
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "Phần mềm AI quản lý MXH tự động");
+    gtk_window_set_title(window, "Diễn viên phim trên MXH");
   }
 
   gtk_window_set_default_size(window, 1280, 720);
@@ -196,7 +196,7 @@ MyApplication* my_application_new() {
   // corresponding .desktop file. This ensures better integration by allowing
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
-  g_set_application_name("MXH tự động");
+  g_set_application_name("Diễn viên phim trên MXH");
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",

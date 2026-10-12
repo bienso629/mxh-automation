@@ -64,8 +64,8 @@ for s in sizes:
 # Desktop Launcher
 cat << 'DESKTOP_EOF' > "$PKG_DIR/usr/share/applications/mxh-tu-dong.desktop"
 [Desktop Entry]
-Name=MXH Tự Động
-Comment=Phần mềm AI quản lý MXH tự động
+Name=Diễn viên phim trên MXH
+Comment=Diễn viên phim trên MXH
 Exec=/usr/bin/mxh-tu-dong
 Icon=mxh-tu-dong
 Terminal=false
@@ -211,8 +211,8 @@ chmod +x ~/.local/bin/mxh-tu-dong
 mkdir -p ~/.local/share/applications
 cat << 'USER_DESK_EOF' > ~/.local/share/applications/mxh-tu-dong.desktop
 [Desktop Entry]
-Name=MXH Tự Động
-Comment=Phần mềm AI quản lý MXH tự động
+Name=Diễn viên phim trên MXH
+Comment=Diễn viên phim trên MXH
 Exec=/home/yenai/.local/bin/mxh-tu-dong %u
 Icon=mxh-tu-dong
 Terminal=false
@@ -240,7 +240,7 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 echo "=========================================================="
 echo " CAI DAT THANH CONG!"
 echo " - Duong dan thuc thi: /usr/bin/mxh-tu-dong"
-echo " - Hoac mo truc tiep tu Menu Ung dung: 'MXH Tự Động'"
+echo " - Hoac mo truc tiep tu Menu Ung dung: 'Diễn viên phim trên MXH'"
 echo "=========================================================="
 INSTALL_SH_EOF
 chmod +x "$DIST_DIR/install.sh"

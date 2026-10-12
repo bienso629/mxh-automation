@@ -63,9 +63,9 @@ cat << DESKTOP_EOF > "$DESKTOP_FILE"
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=MXH Tự Động
+Name=Diễn viên phim trên MXH
 GenericName=AI Social Media Manager
-Comment=Phần mềm AI quản lý MXH tự động
+Comment=Diễn viên phim trên MXH
 Exec=$INSTALL_DIR/agent_mxh_auto %u
 Icon=mxh-tu-dong
 Terminal=false
