@@ -62,6 +62,22 @@ class LocalConfigService {
     await loadConfig(userKey: _currentUserKey);
   }
 
+  String _getUserHomeDir() {
+    final userProfile = Platform.environment['USERPROFILE'];
+    if (userProfile != null && userProfile.trim().isNotEmpty) {
+      return userProfile.trim();
+    }
+    final home = Platform.environment['HOME'];
+    if (home != null && home.trim().isNotEmpty) {
+      return home.trim();
+    }
+    final appData = Platform.environment['APPDATA'];
+    if (appData != null && appData.trim().isNotEmpty) {
+      return appData.trim();
+    }
+    return Directory.systemTemp.path;
+  }
+
   Future<String> _resolveConfigPath({String? userKey}) async {
     final key = userKey ?? _currentUserKey ?? await StorageService().getUserKey();
     final configFileName = key.isNotEmpty ? 'config_$key.json' : 'config.json';
@@ -69,11 +85,17 @@ class LocalConfigService {
     if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       final execDir = p.dirname(Platform.resolvedExecutable);
       final currentDir = Directory.current.path;
+      final homeDir = _getUserHomeDir();
+      final appDataDir = Platform.environment['APPDATA'] ?? '';
+
       final candidates = [
         p.join(currentDir, configFileName),
         p.join(currentDir, '..', configFileName),
         p.join(currentDir, '..', '..', configFileName),
         p.join(currentDir, '..', '..', '..', configFileName),
+        p.join(homeDir, '.agent_mxh_auto', configFileName),
+        p.join(homeDir, '.tadu_ai_agent', configFileName),
+        if (appDataDir.isNotEmpty) p.join(appDataDir, 'AgentMXHAuto', configFileName),
         p.join(execDir, configFileName),
         p.join(execDir, '..', configFileName),
         p.join(execDir, '..', '..', configFileName),
@@ -81,8 +103,6 @@ class LocalConfigService {
         p.join(execDir, '..', '..', '..', '..', configFileName),
         p.join(execDir, '..', '..', '..', '..', '..', configFileName),
         '/home/yenai/Documents/Projects/Typing/apps/plugins/agent-client-server/$configFileName',
-        p.join(Platform.environment['HOME'] ?? '', '.agent_mxh_auto', configFileName),
-        p.join(Platform.environment['HOME'] ?? '', '.tadu_ai_agent', configFileName),
       ];
 
       for (final candidate in candidates) {
@@ -99,6 +119,9 @@ class LocalConfigService {
           p.join(currentDir, '..', 'config.json'),
           p.join(currentDir, '..', '..', 'config.json'),
           p.join(currentDir, '..', '..', '..', 'config.json'),
+          p.join(homeDir, '.agent_mxh_auto', 'config.json'),
+          p.join(homeDir, '.tadu_ai_agent', 'config.json'),
+          if (appDataDir.isNotEmpty) p.join(appDataDir, 'AgentMXHAuto', 'config.json'),
           p.join(execDir, 'config.json'),
           p.join(execDir, '..', 'config.json'),
           p.join(execDir, '..', '..', 'config.json'),
@@ -106,8 +129,6 @@ class LocalConfigService {
           p.join(execDir, '..', '..', '..', '..', 'config.json'),
           p.join(execDir, '..', '..', '..', '..', '..', 'config.json'),
           '/home/yenai/Documents/Projects/Typing/apps/plugins/agent-client-server/config.json',
-          p.join(Platform.environment['HOME'] ?? '', '.agent_mxh_auto', 'config.json'),
-          p.join(Platform.environment['HOME'] ?? '', '.tadu_ai_agent', 'config.json'),
         ];
         for (final fallback in fallbackCandidates) {
           if (File(fallback).existsSync()) {
@@ -118,14 +139,32 @@ class LocalConfigService {
               _resolvedConfigPath = p.normalize(newPath);
               return _resolvedConfigPath!;
             } catch (_) {
-              _resolvedConfigPath = p.normalize(fallback);
-              return _resolvedConfigPath!;
+              // If write failed in installed dir (e.g. Program Files), copy to user home instead
+              try {
+                final safeUserDir = Directory(p.join(homeDir, '.agent_mxh_auto'));
+                if (!safeUserDir.existsSync()) safeUserDir.createSync(recursive: true);
+                final safePath = p.join(safeUserDir.path, configFileName);
+                File(fallback).copySync(safePath);
+                _resolvedConfigPath = p.normalize(safePath);
+                return _resolvedConfigPath!;
+              } catch (_) {
+                _resolvedConfigPath = p.normalize(fallback);
+                return _resolvedConfigPath!;
+              }
             }
           }
         }
       }
 
-      // If not found in candidates, create in current directory or user home
+      // If not found in candidates, prioritize user home directory where user always has write permission
+      final homeAgentDir = Directory(p.join(homeDir, '.agent_mxh_auto'));
+      try {
+        if (!homeAgentDir.existsSync()) homeAgentDir.createSync(recursive: true);
+        final defaultHomePath = p.join(homeAgentDir.path, configFileName);
+        _resolvedConfigPath = defaultHomePath;
+        return defaultHomePath;
+      } catch (_) {}
+
       final defaultDesk = p.join(currentDir, configFileName);
       _resolvedConfigPath = defaultDesk;
       return defaultDesk;
@@ -271,8 +310,8 @@ class LocalConfigService {
       final currentConfig = _cachedConfig.isNotEmpty ? Map<String, dynamic>.from(_cachedConfig) : await loadConfig(userKey: userKey);
       final mergedConfig = Map<String, dynamic>.from(currentConfig)..addAll(newConfig);
 
-      final filePath = await _resolveConfigPath(userKey: userKey);
-      final file = File(filePath);
+      String filePath = await _resolveConfigPath(userKey: userKey);
+      File file = File(filePath);
 
       final toSave = <String, dynamic>{};
       for (final entry in mergedConfig.entries) {
@@ -294,7 +333,28 @@ class LocalConfigService {
       final rawJson = jsonEncode(mergedConfig);
       toSave['_encrypted_vault'] = _enc.encryptValue(rawJson);
 
-      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(toSave));
+      final content = const JsonEncoder.withIndent('  ').convert(toSave);
+
+      try {
+        if (!file.parent.existsSync()) {
+          file.parent.createSync(recursive: true);
+        }
+        await file.writeAsString(content);
+      } catch (writeErr) {
+        // Fallback: nếu đường dẫn hiện tại bị hạn chế quyền (ví dụ Program Files trên Windows)
+        final homeDir = _getUserHomeDir();
+        final key = userKey ?? _currentUserKey ?? await StorageService().getUserKey();
+        final configFileName = key.isNotEmpty ? 'config_$key.json' : 'config.json';
+        final safeDir = Directory(p.join(homeDir, '.agent_mxh_auto'));
+        if (!safeDir.existsSync()) {
+          safeDir.createSync(recursive: true);
+        }
+        final safePath = p.join(safeDir.path, configFileName);
+        final safeFile = File(safePath);
+        await safeFile.writeAsString(content);
+        _resolvedConfigPath = safePath;
+      }
+
       _cachedConfig = Map<String, dynamic>.from(mergedConfig);
       return true;
     } catch (e) {

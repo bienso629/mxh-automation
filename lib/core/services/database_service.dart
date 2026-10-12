@@ -181,11 +181,23 @@ class DatabaseService {
     if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       final execDir = p.dirname(Platform.resolvedExecutable);
       final currentDir = Directory.current.path;
+      final userProfile = Platform.environment['USERPROFILE']?.trim();
+      final homeEnv = Platform.environment['HOME']?.trim();
+      final appDataEnv = Platform.environment['APPDATA']?.trim();
+      final homeDir = (userProfile != null && userProfile.isNotEmpty)
+          ? userProfile
+          : ((homeEnv != null && homeEnv.isNotEmpty)
+              ? homeEnv
+              : ((appDataEnv != null && appDataEnv.isNotEmpty) ? appDataEnv : Directory.systemTemp.path));
+
       final candidates = [
         p.join(currentDir, dbFileName),
         p.join(currentDir, '..', dbFileName),
         p.join(currentDir, '..', '..', dbFileName),
         p.join(currentDir, '..', '..', '..', dbFileName),
+        p.join(homeDir, '.agent_mxh_auto', dbFileName),
+        p.join(homeDir, '.tadu_ai_agent', dbFileName),
+        if (appDataEnv != null && appDataEnv.isNotEmpty) p.join(appDataEnv, 'AgentMXHAuto', dbFileName),
         p.join(execDir, dbFileName),
         p.join(execDir, '..', dbFileName),
         p.join(execDir, '..', '..', dbFileName),
@@ -193,8 +205,6 @@ class DatabaseService {
         p.join(execDir, '..', '..', '..', '..', dbFileName),
         p.join(execDir, '..', '..', '..', '..', '..', dbFileName),
         '/home/yenai/Documents/Projects/Typing/apps/plugins/agent-client-server/$dbFileName',
-        p.join(Platform.environment['HOME'] ?? '', '.agent_mxh_auto', dbFileName),
-        p.join(Platform.environment['HOME'] ?? '', '.tadu_ai_agent', dbFileName),
       ];
 
       for (final candidate in candidates) {
@@ -203,8 +213,8 @@ class DatabaseService {
         }
       }
 
-      // Luôn lưu trữ DB của user mới vào ~/.agent_mxh_auto/
-      final homeDataDir = Directory(p.join(Platform.environment['HOME'] ?? '', '.agent_mxh_auto'));
+      // Luôn lưu trữ DB của user mới vào ~/.agent_mxh_auto/ (đảm bảo quyền ghi cả trên Windows/Linux/macOS)
+      final homeDataDir = Directory(p.join(homeDir, '.agent_mxh_auto'));
       if (!homeDataDir.existsSync()) {
         try {
           homeDataDir.createSync(recursive: true);
