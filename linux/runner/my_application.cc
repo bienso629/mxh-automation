@@ -49,6 +49,7 @@ static void my_application_activate(GApplication* application) {
     gtk_widget_show(GTK_WIDGET(header_bar));
     gtk_header_bar_set_title(header_bar, "Diễn viên MXH");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    gtk_header_bar_set_decoration_layout(header_bar, ":minimize,maximize,close");
 
     GtkCssProvider* provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(
@@ -128,7 +129,7 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
-  gtk_window_fullscreen(window);
+  gtk_window_maximize(window);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
