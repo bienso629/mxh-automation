@@ -246,7 +246,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                                   onTap: () => _handleSelectAccount(acc),
                                   borderRadius: BorderRadius.circular(20),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    padding: const EdgeInsets.fromLTRB(4, 4, 10, 4),
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF1E293B),
                                       borderRadius: BorderRadius.circular(20),
