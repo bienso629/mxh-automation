@@ -64,7 +64,7 @@ class ForumAuthService {
 
       // Nếu API gateway bị lỗi 500, 502 hoặc trả về fail, fallback xác thực trực tiếp qua type.vn
       final directResult = await loginDirectTypeVn(username: username, password: password);
-      if (directResult['statusCode'] == 200) {
+      if (directResult['statusCode'] == 200 || directResult['statusCode'] != 0) {
         return directResult;
       }
 
@@ -135,9 +135,24 @@ class ForumAuthService {
       ).timeout(const Duration(seconds: 12));
 
       if (loginRes.statusCode != 200) {
+        String msg = 'Email hoặc mật khẩu không chính xác.';
+        try {
+          final errBody = utf8.decode(loginRes.bodyBytes);
+          if (errBody.contains('account-locked')) {
+            msg = 'Tài khoản diễn đàn type.vn của bạn hiện đang bị tạm khóa (account-locked). Vui lòng liên hệ quản trị viên để mở khóa.';
+          } else if (errBody.contains('invalid-credentials') || errBody.contains('user-not-found')) {
+            msg = 'Email hoặc mật khẩu không chính xác.';
+          } else if (errBody.isNotEmpty && !errBody.startsWith('<')) {
+            final decoded = jsonDecode(errBody);
+            if (decoded is Map && decoded['message'] != null) {
+              msg = decoded['message'].toString();
+            }
+          }
+        } catch (_) {}
+
         return {
-          'statusCode': 401,
-          'body': {'message': 'Email hoặc mật khẩu không chính xác.'},
+          'statusCode': loginRes.statusCode,
+          'body': {'message': msg},
         };
       }
 

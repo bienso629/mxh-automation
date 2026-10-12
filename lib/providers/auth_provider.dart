@@ -375,12 +375,15 @@ class AuthProvider extends ChangeNotifier {
         return true;
       } else {
         // Tài khoản không đúng hoặc máy chủ xác thực gặp sự cố
-        if (statusCode == 500 || statusCode == 501 || statusCode == 502 || statusCode == 503 || statusCode == 504) {
+        final customMsg = body['message']?.toString();
+        if (customMsg != null && customMsg.isNotEmpty && !customMsg.contains('Internal Server Error')) {
+          _errorMessage = customMsg;
+        } else if (statusCode == 500 || statusCode == 501 || statusCode == 502 || statusCode == 503 || statusCode == 504) {
           _errorMessage = 'Máy chủ xác thực ($server) đang gặp sự cố nội bộ (Mã lỗi: $statusCode - Internal Server Error). Vui lòng thử lại sau hoặc chuyển máy chủ khác.';
         } else if (statusCode == 403 || statusCode == 401) {
           _errorMessage = 'Email hoặc mật khẩu không chính xác.';
         } else {
-          _errorMessage = (body['message'] ?? 'Tài khoản của bạn không đúng hoặc không được chấp nhận.').toString();
+          _errorMessage = (customMsg ?? 'Tài khoản của bạn không đúng hoặc không được chấp nhận.').toString();
         }
         _isLoading = false;
         notifyListeners();
