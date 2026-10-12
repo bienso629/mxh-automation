@@ -173,6 +173,20 @@ class AppTheme {
         thickness: 1,
         space: 1,
       ),
+      scrollbarTheme: ScrollbarThemeData(
+        thumbVisibility: const WidgetStatePropertyAll<bool>(true),
+        trackVisibility: const WidgetStatePropertyAll<bool>(true),
+        thickness: const WidgetStatePropertyAll<double>(6),
+        radius: const Radius.circular(4),
+        thumbColor: WidgetStateProperty.resolveWith<Color>((states) {
+          if (states.contains(WidgetState.dragged) || states.contains(WidgetState.hovered)) {
+            return AppColors.primary;
+          }
+          return AppColors.primaryLight.withValues(alpha: 0.6);
+        }),
+        trackColor: WidgetStatePropertyAll<Color>(AppColors.bgDark.withValues(alpha: 0.5)),
+        trackBorderColor: const WidgetStatePropertyAll<Color>(Colors.transparent),
+      ),
     );
   }
 }

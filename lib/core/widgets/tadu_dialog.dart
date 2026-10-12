@@ -91,9 +91,23 @@ class TaduDialog extends StatelessWidget {
 
             // 2. MODAL BODY (Scrollable if needed)
             Flexible(
-              child: SingleChildScrollView(
-                padding: contentPadding ?? const EdgeInsets.all(20),
-                child: content,
+              child: Builder(
+                builder: (context) {
+                  final scrollCtrl = ScrollController();
+                  return Scrollbar(
+                    controller: scrollCtrl,
+                    thumbVisibility: true,
+                    trackVisibility: true,
+                    interactive: true,
+                    radius: const Radius.circular(4),
+                    thickness: 6,
+                    child: SingleChildScrollView(
+                      controller: scrollCtrl,
+                      padding: contentPadding ?? const EdgeInsets.all(20),
+                      child: content,
+                    ),
+                  );
+                },
               ),
             ),
 
