@@ -60,7 +60,7 @@ class TaduCloudAiAgentApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: Socks5ProxyService()),
       ],
       child: MaterialApp(
-        title: 'Diễn viên phim trên MXH',
+        title: 'Diễn viên MXH',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme,
         home: const AuthGate(),

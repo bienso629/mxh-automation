@@ -539,7 +539,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         Row(
                           children: [
                             Text(
-                              chat.currentSession?.title ?? 'Diễn viên phim trên MXH',
+                              chat.currentSession?.title ?? 'Diễn viên MXH',
                               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                             ),
                           ],
@@ -731,7 +731,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               const SizedBox(width: 10),
               Text(
-                '👋 Xin chào! Tôi là Diễn viên phim trên MXH (${serverProvider.currentAiModel})',
+                '👋 Xin chào! Tôi là Diễn viên MXH (${serverProvider.currentAiModel})',
                 style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold),
               ),
             ],

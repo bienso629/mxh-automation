@@ -202,7 +202,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                               ),
                               const SizedBox(height: 10),
                               const Text(
-                                'Diễn viên phim trên MXH',
+                                'Diễn viên MXH',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontSize: 16.5,
@@ -579,7 +579,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             ),
                             const SizedBox(width: 6),
                             const Text(
-                              'Diễn viên phim trên MXH',
+                              'Diễn viên MXH',
                               style: TextStyle(
                                 fontSize: 10.5,
                                 color: AppColors.textDim,

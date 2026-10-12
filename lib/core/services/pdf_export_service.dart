@@ -316,7 +316,7 @@ class PdfExportService {
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                 children: [
                   pw.Text(
-                    'Báo cáo được xuất tự động bởi Diễn viên phim trên MXH',
+                    'Báo cáo được xuất tự động bởi Diễn viên MXH',
                     style: pw.TextStyle(font: font, fontSize: 7.5, color: PdfColors.grey500),
                   ),
                   pw.Text(
