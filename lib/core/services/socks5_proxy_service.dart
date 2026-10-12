@@ -7,6 +7,7 @@ import 'package:archive/archive.dart';
 import 'package:dartssh2/dartssh2.dart';
 import '../../models/server_model.dart';
 import 'adb_manager_service.dart';
+import 'emulator_manager_service.dart';
 import 'local_config_service.dart';
 import 'persona_service.dart';
 
@@ -1512,6 +1513,7 @@ except Exception:
       '/usr/bin/emulator',
       '/usr/local/bin/emulator',
       p.join(home, '.android-sdk', 'emulator', 'emulator$exeExt'),
+      p.join(home, '.agent_mxh_auto', 'android_sdk', 'emulator', 'emulator$exeExt'),
       p.join(home, '.agent_mxh_auto', 'emulator', 'emulator$exeExt'),
       p.join(home, '.tadu_ai_agent', 'emulator', 'emulator$exeExt'),
     ];
@@ -1521,6 +1523,15 @@ except Exception:
       }
     }
     return null;
+  }
+
+  /// Tìm hoặc tự động tải Android Emulator binary nếu máy chưa cài
+  Future<String?> resolveAndroidEmulatorExecutable({Function(double progress, String status)? onProgress}) async {
+    final existing = _findAndroidEmulatorExecutable();
+    if (existing != null) {
+      return existing;
+    }
+    return await EmulatorManagerService().ensureEmulatorInstalled(onProgress: onProgress);
   }
 
   /// Tìm danh sách AVD khả dụng trên máy tính
@@ -2517,10 +2528,10 @@ for root, _, files in os.walk(target_dir):
     }
 
     // TRƯỜNG HỢP 2: Khởi chạy Android Emulator chuẩn Android Studio trên máy Local
-    // 1. Kiểm tra Android Emulator binary
-    final emulatorBin = _findAndroidEmulatorExecutable();
+    // 1. Kiểm tra hoặc tự động tải Android Emulator binary từ Google repo nếu máy chưa có
+    final emulatorBin = await resolveAndroidEmulatorExecutable();
     if (emulatorBin == null) {
-      throw Exception('Không tìm thấy Android Emulator trên hệ thống. Vui lòng chuyển sang tab Thiết bị ngoại vi (WiFi ADB) hoặc cài đặt môi trường giả lập.');
+      throw Exception('Không tìm thấy Android Emulator trên hệ thống và không thể tải tự động. Vui lòng chuyển sang tab Thiết bị ngoại vi (WiFi ADB) hoặc kiểm tra kết nối mạng.');
     }
 
     // 2. Xác định tên AVD để khởi chạy
@@ -2708,6 +2719,14 @@ for root, _, files in os.walk(target_dir):
       final env = Map<String, String>.from(Platform.environment);
       if (!env.containsKey('DISPLAY') || env['DISPLAY']!.isEmpty) {
         env['DISPLAY'] = ':0';
+      }
+      // Đảm bảo emulator tìm thấy SDK và config nếu chạy từ embedded path
+      final sdkDir = Directory(p.dirname(p.dirname(emulatorBin)));
+      if (!env.containsKey('ANDROID_HOME') && sdkDir.existsSync()) {
+        env['ANDROID_HOME'] = sdkDir.path;
+      }
+      if (!env.containsKey('ANDROID_SDK_ROOT') && sdkDir.existsSync()) {
+        env['ANDROID_SDK_ROOT'] = sdkDir.path;
       }
       final proc = await Process.start(
         emulatorBin,
