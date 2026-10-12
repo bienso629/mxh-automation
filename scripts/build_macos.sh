@@ -2,18 +2,26 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-MOBILE_DIR="$ROOT_DIR/mobile"
-DIST_DIR="$ROOT_DIR/dist-flutter"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DIST_DIR="$PROJECT_DIR/dist-flutter"
 
 mkdir -p "$DIST_DIR"
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "========================================================"
+  echo "[LỖI] Không thể build mục tiêu macOS trên hệ điều hành $(uname -s)."
+  echo "Flutter và Xcode chỉ hỗ trợ biên dịch ứng dụng macOS khi chạy trực tiếp trên máy Mac (macOS)."
+  echo "Vui lòng clone mã nguồn về máy Mac và chạy script này."
+  echo "========================================================"
+  exit 1
+fi
+
 echo "=== Building Flutter macOS Release ==="
-cd "$MOBILE_DIR"
+cd "$PROJECT_DIR"
 flutter build macos --release
 
 echo "=== Packaging macOS App Bundle ==="
-cd "$MOBILE_DIR/build/macos/Build/Products/Release"
-zip -r -y "$DIST_DIR/tadu-cloud-ai-agent-flutter-macos.zip" "agent_mxh_auto.app"
+cd "$PROJECT_DIR/build/macos/Build/Products/Release"
+zip -r -y "$DIST_DIR/MXH-Tu-Dong-macOS-Universal.zip" "agent_mxh_auto.app"
 
-echo "=== [SUCCESS] macOS package created at: $DIST_DIR/tadu-cloud-ai-agent-flutter-macos.zip ==="
+echo "=== [THÀNH CÔNG] Gói cài đặt macOS đã được tạo tại: $DIST_DIR/MXH-Tu-Dong-macOS-Universal.zip ==="
