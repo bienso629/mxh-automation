@@ -243,10 +243,27 @@ class Socks5ProxyService extends ChangeNotifier {
         return true;
       }
 
-      // Trên Windows, tiến trình detached không lưu trong /proc, nếu browserLaunchedAt còn ghi nhận thì giữ session
+      // Trên Windows:
       if (Platform.isWindows) {
         if (session != null && session.browserLaunchedAt != null) {
-          return true;
+          // Trong 5 giây đầu sau khi mở, giữ trạng thái là true để trình duyệt kịp khởi động
+          final elapsed = DateTime.now().difference(session.browserLaunchedAt!);
+          if (elapsed.inSeconds < 5) {
+            return true;
+          }
+          // Sau 5 giây, kiểm tra thực tế xem profile lock có còn tồn tại không
+          final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+          final homeDir = Platform.environment['USERPROFILE'] ??
+              Platform.environment['HOME'] ??
+              Directory.systemTemp.path;
+          final lockFile = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', 'ip_$sanitizedIp', 'lockfile'));
+          final singletonLock = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', 'ip_$sanitizedIp', 'SingletonLock'));
+          if (lockFile.existsSync() || singletonLock.existsSync()) {
+            return true;
+          }
+          // Nếu cả lock file đều không còn, trình duyệt đã bị đóng
+          session.browserLaunchedAt = null;
+          return false;
         }
       }
 
@@ -2046,7 +2063,11 @@ for root, _, files in os.walk(target_dir):
     if (targetBase.isEmpty || !Directory(p.join(avdsDir.path, '$targetBase.avd')).existsSync()) {
       final avds = await getAvailableAvds();
       if (avds.isEmpty) {
-        throw Exception('Hệ thống chưa có Android AVD nào để làm mẫu nhân bản. Vui lòng import hoặc tạo một máy ảo trên Android Studio trước.');
+        throw Exception(
+          'Máy tính chưa có máy ảo Android mẫu để nhân bản. '
+          'Bạn vui lòng bấm nút "Import" bên cạnh để nạp file backup máy ảo có sẵn (.tar.gz, .zip), '
+          'hoặc chuyển sang chế độ "Thiết bị ngoại vi (WiFi ADB)" để kết nối trực tiếp điện thoại thật.'
+        );
       }
       // Ưu tiên chọn base AVD có sẵn snapshot default_boot và dung lượng userdata lớn nhất (đầy đủ app)
       String? bestCandidate;
@@ -2875,15 +2896,27 @@ for root, _, files in os.walk(target_dir):
   /// Đóng riêng trình duyệt của IP mà không làm mất hầm SOCKS5 nếu device vẫn đang chạy
   Future<void> closeBrowserForIp(String ip) async {
     final session = _activeSessions[ip];
-    if (session?.browserProcess != null) {
-      try {
-        session!.browserProcess!.kill();
-      } catch (_) {}
-      session?.browserProcess = null;
+    if (session != null) {
+      if (session.browserProcess != null) {
+        try {
+          session.browserProcess!.kill();
+        } catch (_) {}
+        session.browserProcess = null;
+      }
+      session.browserLaunchedAt = null;
     }
     try {
       final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      if (!Platform.isWindows) {
+      if (Platform.isWindows) {
+        try {
+          final winProfileNeedle = 'browser_profiles\\\\ip_$sanitizedIp';
+          await Process.run('powershell', [
+            '-NoProfile',
+            '-Command',
+            "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*$winProfileNeedle*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }"
+          ]);
+        } catch (_) {}
+      } else {
         await Process.run('pkill', ['-f', 'browser_profiles/ip_$sanitizedIp']);
       }
       final homeDir = Platform.environment['USERPROFILE'] ??
