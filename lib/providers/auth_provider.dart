@@ -40,6 +40,72 @@ class AuthProvider extends ChangeNotifier {
   List<AccountProfile> get accounts => _accounts;
   List<String> get userGroups => _userGroups;
 
+  static bool isActorGroup(String group) {
+    final g = group.toLowerCase().trim();
+    // Bỏ qua dấu gạch ngang/dưới và dấu tiếng Việt để so sánh linh hoạt
+    final normalized = g
+        .replaceAll('đ', 'd')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-')
+        .replaceAll('_', '-')
+        .replaceAll(' ', '-');
+
+    if (g == 'nhóm-diễn-viên-mxh' ||
+        g == 'nhom-dien-vien-mxh' ||
+        g == 'nhóm diễn viên mxh' ||
+        g == 'nhom dien vien mxh' ||
+        normalized == 'nhom-dien-vien-mxh' ||
+        (normalized.contains('nhom') && normalized.contains('dien-vien') && normalized.contains('mxh')) ||
+        normalized.contains('dien-vien-mxh') ||
+        (normalized.contains('dien-vien') && normalized.contains('mxh'))) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool checkActorAccess({
+    String? email,
+    String? name,
+    List<String>? groups,
+  }) {
+    final em = (email ?? '').toLowerCase().trim();
+    final nm = (name ?? '').toLowerCase().trim();
+    // Tài khoản admin hệ thống luôn có quyền quản trị và vận hành
+    if (nm == 'admin' ||
+        em.contains('admin') ||
+        em == 'local.admin@type.vn' ||
+        em == 'admin@type.vn' ||
+        em.startsWith('admin@') ||
+        em.contains('typing.vn')) {
+      return true;
+    }
+
+    if (groups != null) {
+      for (final g in groups) {
+        final slug = g.toLowerCase().trim();
+        if (slug.contains('admin') ||
+            slug.contains('quan-tri') ||
+            slug == 'administrators' ||
+            slug.contains('lap-trinh')) {
+          return true;
+        }
+        if (isActorGroup(g)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool get hasActorRole {
+    if (isAdmin) return true;
+    return checkActorAccess(
+      email: _userEmail,
+      name: _userName,
+      groups: _userGroups,
+    );
+  }
+
   bool get isAdmin {
     final email = (_userEmail ?? '').toLowerCase().trim();
     final name = (_userName ?? '').toLowerCase().trim();
@@ -130,10 +196,28 @@ class AuthProvider extends ChangeNotifier {
           } catch (_) {}
         }
 
-        final userKey = await _storage.getUserKey();
-        await _db.switchUser(userKey);
-        await _localConfig.switchUser(userKey);
-        _persona.switchUser(userKey);
+        // Kiểm tra quyền nhóm của phiên lưu trữ
+        final hasAccess = checkActorAccess(
+          email: _userEmail,
+          name: _userName,
+          groups: _userGroups,
+        );
+
+        if (!hasAccess) {
+          // Nếu phiên cũ không còn thuộc nhóm diễn viên MXH, xoá phiên
+          await _storage.clearAuth();
+          _isAuthenticated = false;
+          _userEmail = null;
+          _userName = null;
+          _authToken = null;
+          _userGroups = [];
+          _errorMessage = 'Tài khoản chưa tham gia nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
+        } else {
+          final userKey = await _storage.getUserKey();
+          await _db.switchUser(userKey);
+          await _localConfig.switchUser(userKey);
+          _persona.switchUser(userKey);
+        }
       } else {
         _isAuthenticated = false;
       }
@@ -200,6 +284,17 @@ class AuthProvider extends ChangeNotifier {
               : <String>[],
         };
 
+        // Đảm bảo lấy đầy đủ danh sách nhóm của user trực tiếp từ type.vn
+        try {
+          final extraGroups = await _forumAuth.fetchUserGroupsByUsername(user['name']?.toString() ?? cleanEmail);
+          final list = user['groups'] as List<String>;
+          for (final eg in extraGroups) {
+            if (!list.contains(eg)) {
+              list.add(eg);
+            }
+          }
+        } catch (_) {}
+
         // Kiểm tra quyền nhóm qua /forum/groups giống hệt checkAccount() của ai.type
         try {
           final groupsRes = await _forumAuth.getGroups(server);
@@ -207,18 +302,40 @@ class AuthProvider extends ChangeNotifier {
             final groupsList = groupsRes['data']['groups'] as List? ?? [];
             for (final g in groupsList) {
               final slug = g['slug']?.toString() ?? '';
+              final name = g['name']?.toString() ?? '';
               final members = g['members'] as List? ?? [];
               for (final m in members) {
                 if (m['uid']?.toString() == user['id']?.toString()) {
                   final list = user['groups'] as List<String>;
-                  if (!list.contains(slug)) {
+                  if (slug.isNotEmpty && !list.contains(slug)) {
                     list.add(slug);
+                  }
+                  if (name.isNotEmpty && !list.contains(name)) {
+                    list.add(name);
                   }
                 }
               }
             }
           }
         } catch (_) {}
+
+        final groupsList = (user['groups'] as List?)?.map((e) => e.toString()).toList() ?? <String>[];
+
+        // KIỂM TRA PHÂN QUYỀN BẮT BUỘC:
+        // Chỉ tài khoản thuộc nhóm "nhóm-diễn-viên-mxh" trên type.vn (hoặc admin hệ thống) mới được phép sử dụng phần mềm
+        final hasAccess = checkActorAccess(
+          email: cleanEmail,
+          name: user['name']?.toString(),
+          groups: groupsList,
+        );
+
+        if (!hasAccess) {
+          _errorMessage = 'Tài khoản của bạn chưa thuộc nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn. Vui lòng tham gia nhóm để được phép sử dụng phần mềm.';
+          _isLoading = false;
+          _isAuthenticated = false;
+          notifyListeners();
+          return false;
+        }
 
         // Tạo JWT Token theo chuẩn AuthUtils._generateJWTToken
         final jwtToken = CryptoHelper.generateJWTToken(user);
@@ -290,10 +407,18 @@ class AuthProvider extends ChangeNotifier {
         final name = profile['name']?.toString() ?? profile['username']?.toString() ?? email;
         final avatar = profile['avatar']?.toString();
 
+        final groups = (profile['groups'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        if (!checkActorAccess(email: email, name: name, groups: groups)) {
+          _errorMessage = 'Tài khoản "$email" không thuộc nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+
         _userEmail = email;
         _userName = name;
         _avatar = avatar;
-        _userGroups = (profile['groups'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _userGroups = groups;
         _isAuthenticated = true;
         _errorMessage = null;
 
