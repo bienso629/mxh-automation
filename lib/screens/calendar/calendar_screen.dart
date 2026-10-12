@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -119,17 +120,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
     DateTime chosenDate = targetDate;
     final selectedIps = <String>{};
     int personaCurrentPage = 1;
-    const int personaPageSize = 5;
+    const int personaPageSize = 10;
+    final searchPersonaCtrl = TextEditingController();
+    String searchPersonaQuery = '';
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (dialogCtx, setDialogState) {
-          final allPersonas = _personasMap.values.toList();
+          final allPersonasRaw = _personasMap.values.toList();
+          final allPersonas = searchPersonaQuery.trim().isEmpty
+              ? allPersonasRaw
+              : allPersonasRaw.where((p) {
+                  final q = searchPersonaQuery.trim().toLowerCase();
+                  return p.name.toLowerCase().contains(q) || p.ip.toLowerCase().contains(q);
+                }).toList();
 
           return TaduDialog(
-            minWidth: 540,
-            maxWidth: 620,
+            minWidth: 560,
+            maxWidth: 680,
             title: const Row(
               children: [
                 Icon(Icons.add_task_rounded, color: AppColors.primaryLight, size: 22),
@@ -324,12 +333,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // Hàng tiêu đề & Công cụ chọn
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
                                 'Phân bổ nhân vật thực hiện (${selectedIps.length}/$totalPersonas):',
-                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                               ),
                               Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -434,18 +444,76 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 8),
+
+                          // Ô tìm kiếm nhân vật theo tên hoặc IP
+                          Container(
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: AppColors.inputBg,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppColors.borderDark),
+                            ),
+                            child: TextField(
+                              controller: searchPersonaCtrl,
+                              style: const TextStyle(fontSize: 12.5),
+                              decoration: InputDecoration(
+                                hintText: 'Tìm kiếm nhân vật theo tên hoặc IP...',
+                                hintStyle: const TextStyle(fontSize: 12, color: AppColors.textDim),
+                                prefixIcon: const Icon(Icons.search_rounded, size: 16, color: AppColors.primaryLight),
+                                suffixIcon: searchPersonaQuery.isNotEmpty
+                                    ? IconButton(
+                                        icon: const Icon(Icons.clear_rounded, size: 14, color: AppColors.textDim),
+                                        padding: EdgeInsets.zero,
+                                        onPressed: () {
+                                          searchPersonaCtrl.clear();
+                                          setDialogState(() {
+                                            searchPersonaQuery = '';
+                                            personaCurrentPage = 1;
+                                          });
+                                        },
+                                      )
+                                    : null,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                isDense: true,
+                              ),
+                              onChanged: (val) {
+                                setDialogState(() {
+                                  searchPersonaQuery = val;
+                                  personaCurrentPage = 1;
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+
+                          // Bảng danh sách row nhân vật rộng rãi & avatar to
                           Container(
                             decoration: BoxDecoration(
                               color: AppColors.inputBg,
-                              borderRadius: BorderRadius.circular(4),
+                              borderRadius: BorderRadius.circular(6),
                               border: Border.all(color: AppColors.borderDark),
                             ),
                             child: allPersonas.isEmpty
-                                ? const Center(
+                                ? Center(
                                     child: Padding(
-                                      padding: EdgeInsets.all(16),
-                                      child: Text('Chưa có nhân vật nào trong hệ thống', style: TextStyle(color: AppColors.textDim, fontSize: 12)),
+                                      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.search_off_rounded, size: 28, color: AppColors.textDim.withValues(alpha: 0.6)),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            searchPersonaQuery.isNotEmpty
+                                                ? 'Không tìm thấy nhân vật nào khớp với "$searchPersonaQuery"'
+                                                : 'Chưa có nhân vật nào trong hệ thống',
+                                            style: const TextStyle(color: AppColors.textDim, fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   )
                                 : ListView.separated(
@@ -456,6 +524,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     itemBuilder: (context, idx) {
                                       final p = pagePersonas[idx];
                                       final isSelected = selectedIps.contains(p.ip);
+                                      final hasAvatar = p.avatarUrl != null && p.avatarUrl!.isNotEmpty;
+
                                       return InkWell(
                                         onTap: () {
                                           setDialogState(() {
@@ -466,50 +536,124 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                             }
                                           });
                                         },
+                                        hoverColor: AppColors.primary.withValues(alpha: 0.06),
                                         child: Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                           child: Row(
                                             children: [
                                               Icon(
                                                 isSelected ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
-                                                size: 16,
+                                                size: 19,
                                                 color: isSelected ? AppColors.primaryLight : AppColors.textDim,
                                               ),
-                                              const SizedBox(width: 8),
-                                              CircleAvatar(
-                                                radius: 9,
-                                                backgroundColor: p.gender.toLowerCase() == 'nữ'
-                                                    ? Colors.pinkAccent.withValues(alpha: 0.3)
-                                                    : AppColors.accentCyan.withValues(alpha: 0.3),
-                                                child: Text(
-                                                  p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
-                                                  style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                                              const SizedBox(width: 12),
+
+                                              // Avatar to rõ nét (38x38)
+                                              Container(
+                                                width: 38,
+                                                height: 38,
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.cardBg,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: isSelected
+                                                        ? AppColors.primaryLight
+                                                        : (p.gender.toLowerCase() == 'nữ'
+                                                            ? Colors.pinkAccent.withValues(alpha: 0.5)
+                                                            : AppColors.accentCyan.withValues(alpha: 0.5)),
+                                                    width: isSelected ? 1.5 : 1.0,
+                                                  ),
+                                                ),
+                                                child: ClipRRect(
+                                                  borderRadius: BorderRadius.circular(7),
+                                                  child: hasAvatar
+                                                      ? (p.avatarUrl!.startsWith('http')
+                                                          ? Image.network(
+                                                              p.avatarUrl!,
+                                                              fit: BoxFit.cover,
+                                                              errorBuilder: (ctx, err, stack) => _buildFallbackAvatar(p),
+                                                            )
+                                                          : Image.file(
+                                                              File(p.avatarUrl!),
+                                                              fit: BoxFit.cover,
+                                                              errorBuilder: (ctx, err, stack) => _buildFallbackAvatar(p),
+                                                            ))
+                                                      : _buildFallbackAvatar(p),
                                                 ),
                                               ),
-                                              const SizedBox(width: 8),
+                                              const SizedBox(width: 12),
+
+                                              // Thông tin tên, giới tính, tuổi và IP
                                               Expanded(
-                                                child: Row(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  mainAxisSize: MainAxisSize.min,
                                                   children: [
-                                                    Flexible(
-                                                      child: Text(
-                                                        p.name,
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow.ellipsis,
-                                                        style: TextStyle(
-                                                          fontSize: 12,
-                                                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                                          color: isSelected ? AppColors.textWhite : AppColors.textBody,
+                                                    Row(
+                                                      children: [
+                                                        Flexible(
+                                                          child: Text(
+                                                            p.name,
+                                                            maxLines: 1,
+                                                            overflow: TextOverflow.ellipsis,
+                                                            style: TextStyle(
+                                                              fontSize: 13,
+                                                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                                              color: isSelected ? AppColors.textWhite : AppColors.textBody,
+                                                            ),
+                                                          ),
                                                         ),
-                                                      ),
+                                                        const SizedBox(width: 8),
+                                                        Container(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                          decoration: BoxDecoration(
+                                                            color: p.gender.toLowerCase() == 'nữ'
+                                                                ? Colors.pinkAccent.withValues(alpha: 0.15)
+                                                                : AppColors.accentCyan.withValues(alpha: 0.15),
+                                                            borderRadius: BorderRadius.circular(3),
+                                                          ),
+                                                          child: Text(
+                                                            '${p.gender} • ${p.age}t',
+                                                            style: TextStyle(
+                                                              fontSize: 10,
+                                                              fontWeight: FontWeight.w600,
+                                                              color: p.gender.toLowerCase() == 'nữ'
+                                                                  ? Colors.pinkAccent
+                                                                  : AppColors.accentCyan,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
                                                     ),
-                                                    const SizedBox(width: 6),
-                                                    Text(
-                                                      '(${p.ip})',
-                                                      style: const TextStyle(
-                                                        fontSize: 10.5,
-                                                        fontFamily: 'monospace',
-                                                        color: AppColors.textDim,
-                                                      ),
+                                                    const SizedBox(height: 3),
+                                                    Row(
+                                                      children: [
+                                                        const Icon(Icons.public_rounded, size: 12, color: AppColors.textDim),
+                                                        const SizedBox(width: 4),
+                                                        Text(
+                                                          p.ip,
+                                                          style: const TextStyle(
+                                                            fontSize: 11,
+                                                            fontFamily: 'monospace',
+                                                            color: AppColors.textDim,
+                                                          ),
+                                                        ),
+                                                        if (p.bio.isNotEmpty) ...[
+                                                          const SizedBox(width: 8),
+                                                          Expanded(
+                                                            child: Text(
+                                                              p.bio,
+                                                              maxLines: 1,
+                                                              overflow: TextOverflow.ellipsis,
+                                                              style: const TextStyle(
+                                                                fontSize: 10.5,
+                                                                color: AppColors.textMuted,
+                                                                fontStyle: FontStyle.italic,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ],
                                                     ),
                                                   ],
                                                 ),
@@ -521,8 +665,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     },
                                   ),
                           ),
+
+                          // Phân trang
                           if (totalPages > 1) ...[
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 10),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -532,7 +678,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                       : null,
                                   borderRadius: BorderRadius.circular(4),
                                   child: Container(
-                                    padding: const EdgeInsets.all(5),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                                     decoration: BoxDecoration(
                                       color: safePage > 1 ? AppColors.cardBg : Colors.transparent,
                                       borderRadius: BorderRadius.circular(4),
@@ -540,14 +686,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         color: safePage > 1 ? AppColors.borderDark : AppColors.borderDark.withValues(alpha: 0.3),
                                       ),
                                     ),
-                                    child: Icon(
-                                      Icons.chevron_left_rounded,
-                                      size: 15,
-                                      color: safePage > 1 ? AppColors.textBody : AppColors.textDim,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.chevron_left_rounded,
+                                          size: 15,
+                                          color: safePage > 1 ? AppColors.textBody : AppColors.textDim,
+                                        ),
+                                        const SizedBox(width: 2),
+                                        Text('Trước', style: TextStyle(fontSize: 11, color: safePage > 1 ? AppColors.textBody : AppColors.textDim)),
+                                      ],
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 6),
+                                const SizedBox(width: 8),
                                 Wrap(
                                   spacing: 4,
                                   children: List.generate(totalPages, (index) {
@@ -557,8 +710,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                       onTap: () => setDialogState(() => personaCurrentPage = pNum),
                                       borderRadius: BorderRadius.circular(4),
                                       child: Container(
-                                        width: 26,
-                                        height: 26,
+                                        width: 28,
+                                        height: 28,
                                         alignment: Alignment.center,
                                         decoration: BoxDecoration(
                                           color: isCur ? AppColors.primaryLight : AppColors.cardBg,
@@ -570,7 +723,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         child: Text(
                                           '$pNum',
                                           style: TextStyle(
-                                            fontSize: 11,
+                                            fontSize: 11.5,
                                             fontWeight: isCur ? FontWeight.bold : FontWeight.w500,
                                             color: isCur ? const Color(0xFF070B14) : AppColors.textBody,
                                           ),
@@ -579,14 +732,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     );
                                   }),
                                 ),
-                                const SizedBox(width: 6),
+                                const SizedBox(width: 8),
                                 InkWell(
                                   onTap: safePage < totalPages
                                       ? () => setDialogState(() => personaCurrentPage = safePage + 1)
                                       : null,
                                   borderRadius: BorderRadius.circular(4),
                                   child: Container(
-                                    padding: const EdgeInsets.all(5),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                                     decoration: BoxDecoration(
                                       color: safePage < totalPages ? AppColors.cardBg : Colors.transparent,
                                       borderRadius: BorderRadius.circular(4),
@@ -594,10 +747,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         color: safePage < totalPages ? AppColors.borderDark : AppColors.borderDark.withValues(alpha: 0.3),
                                       ),
                                     ),
-                                    child: Icon(
-                                      Icons.chevron_right_rounded,
-                                      size: 15,
-                                      color: safePage < totalPages ? AppColors.textBody : AppColors.textDim,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text('Sau', style: TextStyle(fontSize: 11, color: safePage < totalPages ? AppColors.textBody : AppColors.textDim)),
+                                        const SizedBox(width: 2),
+                                        Icon(
+                                          Icons.chevron_right_rounded,
+                                          size: 15,
+                                          color: safePage < totalPages ? AppColors.textBody : AppColors.textDim,
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -1854,4 +2014,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ),
     );
   }
+
+  Widget _buildFallbackAvatar(PersonaProfile p) {
+    final isFemale = p.gender.toLowerCase() == 'nữ';
+    return Container(
+      color: isFemale
+          ? Colors.pinkAccent.withValues(alpha: 0.25)
+          : AppColors.accentCyan.withValues(alpha: 0.25),
+      alignment: Alignment.center,
+      child: Text(
+        p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
+          color: isFemale ? Colors.pinkAccent : AppColors.accentCyan,
+        ),
+      ),
+    );
+  }
 }
+
