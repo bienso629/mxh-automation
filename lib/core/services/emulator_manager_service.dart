@@ -349,6 +349,129 @@ class EmulatorManagerService {
     }
   }
 
+  /// Đọc `image.sysdir.1` trong config.ini của AVD (ví dụ
+  /// `system-images/android-37.0/google_apis_playstore_ps16k/x86_64/`).
+  String? readAvdSysDir(Directory avdDir) {
+    final cfg = File(p.join(avdDir.path, 'config.ini'));
+    if (!cfg.existsSync()) return null;
+    for (final line in cfg.readAsLinesSync()) {
+      final t = line.trim();
+      if (t.startsWith('image.sysdir.1=')) {
+        final v = t.substring('image.sysdir.1='.length).trim().replaceAll('\\', '/');
+        return v.isEmpty ? null : v;
+      }
+    }
+    return null;
+  }
+
+  /// Kiểm tra system image của AVD đã có trong [sdkRoot] chưa.
+  bool isSystemImagePresent(String sdkRoot, String sysDir) {
+    final dir = Directory(p.joinAll([sdkRoot, ...sysDir.split('/').where((s) => s.isNotEmpty)]));
+    return File(p.join(dir.path, 'system.img')).existsSync();
+  }
+
+  /// File backup AVD (.avd + .ini) KHÔNG chứa Android System Image (~2-3 GB).
+  /// Máy chưa từng cài Android Studio sẽ thiếu image => emulator tắt ngay khi khởi động.
+  /// Hàm này tự tra kho Google và tải đúng image AVD yêu cầu vào [sdkRoot].
+  Future<bool> ensureSystemImageForAvd(
+    Directory avdDir,
+    String sdkRoot, {
+    Function(double progress, String status)? onProgress,
+  }) async {
+    final sysDir = readAvdSysDir(avdDir);
+    if (sysDir == null) return true; // Không xác định được, để emulator tự xử lý
+    if (isSystemImagePresent(sdkRoot, sysDir)) return true;
+
+    final parts = sysDir.split('/').where((s) => s.isNotEmpty).toList();
+    // [system-images, android-37.0, google_apis_playstore_ps16k, x86_64]
+    if (parts.length < 4 || parts[0] != 'system-images') return false;
+    final api = parts[1];
+    final tag = parts[2];
+    final abi = parts[3];
+    final pkgPath = 'system-images;$api;$tag;$abi';
+
+    // Kho XML của Google gộp nhiều biến thể tag (vd: *_ps16k nằm trong google_apis_playstore)
+    final baseTag = tag.replaceAll(RegExp(r'_(ps16k|tablet)$'), '');
+    final repoTags = <String>{tag, baseTag, 'google_apis_playstore', 'google_apis', 'default'};
+
+    String? zipUrl;
+    for (final rt in repoTags) {
+      for (final ver in ['4', '3']) {
+        final xmlUrl = 'https://dl.google.com/android/repository/sys-img/$rt/sys-img2-$ver.xml';
+        try {
+          final res = await http.get(Uri.parse(xmlUrl));
+          if (res.statusCode != 200) continue;
+          final m = RegExp(
+            '<remotePackage path="${RegExp.escape(pkgPath)}">(.*?)</remotePackage>',
+            dotAll: true,
+          ).firstMatch(res.body);
+          if (m == null) continue;
+          final urlMatch = RegExp(r'<url>([^<]+)</url>').firstMatch(m.group(1)!);
+          if (urlMatch == null) continue;
+          zipUrl = 'https://dl.google.com/android/repository/sys-img/$rt/${urlMatch.group(1)!.trim()}';
+          break;
+        } catch (_) {}
+      }
+      if (zipUrl != null) break;
+    }
+
+    if (zipUrl == null) {
+      _statusMessage = 'Không tìm thấy system image $pkgPath trên kho Google.';
+      debugPrint('[EmulatorManager] $_statusMessage');
+      return false;
+    }
+
+    while (_isDownloading) {
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    if (isSystemImagePresent(sdkRoot, sysDir)) return true;
+
+    _isDownloading = true;
+    final targetDir = Directory(p.joinAll([sdkRoot, ...parts]));
+    final tempZip = File(p.join(sdkRoot, 'sysimg_${DateTime.now().millisecondsSinceEpoch}.zip'));
+    final tempExtract = Directory(p.join(sdkRoot, '.sysimg_tmp_${DateTime.now().millisecondsSinceEpoch}'));
+    try {
+      Directory(sdkRoot).createSync(recursive: true);
+      await _downloadFile(zipUrl, tempZip, taskTitle: 'Android System Image ($api)', onProgress: onProgress);
+      tempExtract.createSync(recursive: true);
+      await _extractZip(tempZip, tempExtract, taskTitle: 'Android System Image', onProgress: onProgress);
+
+      // Zip của Google có 1 thư mục gốc (thường là tên ABI, vd: x86_64/)
+      Directory srcDir = tempExtract;
+      final children = tempExtract.listSync().whereType<Directory>().toList();
+      if (!File(p.join(tempExtract.path, 'system.img')).existsSync() && children.length == 1) {
+        srcDir = children.first;
+      }
+      if (!File(p.join(srcDir.path, 'system.img')).existsSync()) {
+        throw Exception('Gói system image tải về không hợp lệ (thiếu system.img).');
+      }
+
+      if (targetDir.existsSync()) targetDir.deleteSync(recursive: true);
+      targetDir.parent.createSync(recursive: true);
+      try {
+        srcDir.renameSync(targetDir.path);
+      } catch (_) {
+        _copyDirectoryRecursive(srcDir, targetDir);
+      }
+      _statusMessage = 'Đã cài đặt Android System Image $api.';
+      debugPrint('[EmulatorManager] Đã cài system image tại ${targetDir.path}');
+      return true;
+    } catch (e, stack) {
+      debugPrint('[EmulatorManager] Lỗi tải system image: $e\n$stack');
+      _statusMessage = 'Lỗi tải Android System Image: $e';
+      return false;
+    } finally {
+      _isDownloading = false;
+      try {
+        if (tempZip.existsSync()) tempZip.deleteSync();
+      } catch (_) {}
+      try {
+        if (tempExtract.existsSync()) tempExtract.deleteSync(recursive: true);
+      } catch (_) {}
+      onProgress?.call(1.0, _statusMessage);
+    }
+  }
+
   void _copyDirectoryRecursive(Directory src, Directory dst) {
     if (!dst.existsSync()) {
       dst.createSync(recursive: true);

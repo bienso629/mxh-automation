@@ -2728,6 +2728,25 @@ for root, _, files in os.walk(target_dir):
       if (!env.containsKey('ANDROID_SDK_ROOT') && sdkDir.existsSync()) {
         env['ANDROID_SDK_ROOT'] = sdkDir.path;
       }
+
+      // File backup AVD không kèm Android System Image. Thiếu image thì emulator tắt ngay
+      // ("The emulator process for AVD ... has terminated"), nên tự tải đúng image trước khi mở.
+      final effectiveSdkRoot = env['ANDROID_SDK_ROOT'] ?? sdkDir.path;
+      final avdDataDir = Directory(p.join(avdsDir.path, '$actualAvd.avd'));
+      final emuMgr = EmulatorManagerService();
+      final sysDir = emuMgr.readAvdSysDir(avdDataDir);
+      if (sysDir != null && !emuMgr.isSystemImagePresent(effectiveSdkRoot, sysDir)) {
+        debugPrint('[Device] Thiếu system image $sysDir, đang tự tải về $effectiveSdkRoot ...');
+        final ok = await emuMgr.ensureSystemImageForAvd(avdDataDir, effectiveSdkRoot);
+        if (!ok) {
+          session.httpBridgeProcess?.kill();
+          throw Exception(
+            'Máy ảo $actualAvd cần Android System Image ($sysDir) nhưng tải tự động thất bại. '
+            '${emuMgr.statusMessage} Vui lòng kiểm tra kết nối mạng và dung lượng ổ đĩa (cần trống khoảng 6 GB) rồi thử lại.',
+          );
+        }
+      }
+
       final proc = await Process.start(
         emulatorBin,
         emulatorArgs,
