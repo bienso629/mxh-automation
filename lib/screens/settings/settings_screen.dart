@@ -9,6 +9,7 @@ import '../../core/services/local_config_service.dart';
 import '../../core/services/native_ssh_service.dart';
 import '../../core/services/persona_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
+import '../../core/services/windows_hypervisor_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_toast.dart';
 import '../../core/widgets/model_picker_dialog.dart';
@@ -41,11 +42,119 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isScanningCli = false;
   bool _isRepairing = false;
 
+  // Hyper-V / Windows Hypervisor Platform (chỉ Windows)
+  final WindowsHypervisorService _hypervisor = WindowsHypervisorService();
+  HypervisorState _hypervisorState = HypervisorState.unknown;
+  bool _isTogglingHypervisor = false;
+
   @override
   void initState() {
     super.initState();
     _loadGlobalConfig();
     _scanCliAgents();
+    _refreshHypervisorState();
+  }
+
+  Future<void> _refreshHypervisorState() async {
+    if (!_hypervisor.isSupported) return;
+    final state = await _hypervisor.getState();
+    if (mounted && _hypervisorState != HypervisorState.pendingRestart) {
+      setState(() => _hypervisorState = state);
+    }
+  }
+
+  Future<void> _toggleHypervisor(bool enable) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(enable ? 'Bật Hyper-V cho máy ảo' : 'Tắt Hyper-V'),
+        content: Text(enable
+            ? 'Windows sẽ hỏi quyền Administrator để bật Hyper-V và Windows Hypervisor Platform giúp máy ảo Android chạy nhanh hơn.\n\nSau khi bật xong cần khởi động lại máy.'
+            : 'Windows sẽ hỏi quyền Administrator để tắt Hyper-V và Windows Hypervisor Platform.\n\nSau khi tắt xong cần khởi động lại máy.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Đồng ý')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isTogglingHypervisor = true);
+    final ok = await _hypervisor.setEnabled(enable);
+    if (!mounted) return;
+    setState(() {
+      _isTogglingHypervisor = false;
+      if (ok) _hypervisorState = HypervisorState.pendingRestart;
+    });
+
+    if (!ok) {
+      AppToast.error(context, 'Không thể ${enable ? 'bật' : 'tắt'} Hyper-V. Bạn đã từ chối quyền Administrator hoặc Windows không hỗ trợ (bản Home cũ, chưa bật ảo hóa trong BIOS).');
+      return;
+    }
+
+    final restart = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cần khởi động lại máy'),
+        content: Text('Đã ${enable ? 'bật' : 'tắt'} Hyper-V thành công. Khởi động lại máy ngay để áp dụng?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Để sau')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Khởi động lại')),
+        ],
+      ),
+    );
+    if (restart == true) {
+      await _hypervisor.restartNow();
+    }
+  }
+
+  Widget _buildHypervisorToggle() {
+    final enabled = _hypervisorState == HypervisorState.enabled;
+    final pending = _hypervisorState == HypervisorState.pendingRestart;
+    final String subtitle;
+    if (pending) {
+      subtitle = 'Đã thay đổi. Vui lòng khởi động lại máy để áp dụng.';
+    } else if (_hypervisorState == HypervisorState.unknown) {
+      subtitle = 'Không xác định được trạng thái. Bạn vẫn có thể thử bật.';
+    } else {
+      subtitle = enabled
+          ? 'Máy ảo Android đang được tăng tốc phần cứng qua Windows Hypervisor Platform'
+          : 'Chưa bật tăng tốc. Máy ảo Android sẽ chạy rất chậm hoặc không khởi động được';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.inputBg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: enabled ? AppColors.accent.withValues(alpha: 0.4) : AppColors.borderDark),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.memory_rounded, size: 18, color: enabled ? AppColors.accent : AppColors.textMuted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Tăng tốc máy ảo (Hyper-V / WHPX)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text(subtitle, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+              ],
+            ),
+          ),
+          if (_isTogglingHypervisor)
+            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+          else
+            SizedBox(
+              height: 22,
+              child: Switch(
+                value: enabled,
+                onChanged: pending ? null : (val) => _toggleHypervisor(val),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1436,6 +1545,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ),
                             const SizedBox(height: 16),
+                            if (Platform.isWindows) ...[
+                              _buildHypervisorToggle(),
+                              const SizedBox(height: 16),
+                            ],
                             const Text('Số Thiết Bị Tối Đa Được Mở Đồng Thời', style: TextStyle(fontSize: 11, color: AppColors.textDim)),
                             const SizedBox(height: 6),
                             TextField(
