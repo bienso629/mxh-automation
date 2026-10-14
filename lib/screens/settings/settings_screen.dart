@@ -42,7 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isScanningCli = false;
   bool _isRepairing = false;
 
-  // Hyper-V / Windows Hypervisor Platform (chỉ Windows)
+  // Windows Hypervisor Platform - WHPX (chỉ Windows)
   final WindowsHypervisorService _hypervisor = WindowsHypervisorService();
   HypervisorState _hypervisorState = HypervisorState.unknown;
   bool _isTogglingHypervisor = false;
@@ -67,10 +67,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(enable ? 'Bật Hyper-V cho máy ảo' : 'Tắt Hyper-V'),
+        title: Text(enable ? 'Bật tăng tốc máy ảo (WHPX)' : 'Tắt tăng tốc máy ảo (WHPX)'),
         content: Text(enable
-            ? 'Windows sẽ hỏi quyền Administrator để bật Hyper-V và Windows Hypervisor Platform giúp máy ảo Android chạy nhanh hơn.\n\nSau khi bật xong cần khởi động lại máy.'
-            : 'Windows sẽ hỏi quyền Administrator để tắt hẳn Hyper-V và Windows Hypervisor Platform.\n\nLưu ý: WSL2, Docker Desktop, Windows Sandbox và tính năng Memory Integrity cũng sẽ ngừng hoạt động cho đến khi bật lại. Máy ảo Android sẽ chạy rất chậm.\n\nSau khi tắt xong cần khởi động lại máy.'),
+            ? 'Windows sẽ hỏi quyền Administrator để bật Windows Hypervisor Platform (WHPX) giúp máy ảo Android chạy nhanh hơn.\n\nSau khi bật xong cần khởi động lại máy.'
+            : 'Windows sẽ hỏi quyền Administrator để tắt hẳn Windows Hypervisor Platform (WHPX).\n\nLưu ý: WSL2, Docker Desktop, Windows Sandbox và tính năng Memory Integrity cũng sẽ ngừng hoạt động cho đến khi bật lại. Máy ảo Android sẽ chạy rất chậm.\n\nSau khi tắt xong cần khởi động lại máy.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
           ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Đồng ý')),
@@ -88,7 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     if (!ok) {
-      AppToast.error(context, 'Không thể ${enable ? 'bật' : 'tắt'} Hyper-V. Bạn đã từ chối quyền Administrator hoặc Windows không hỗ trợ (bản Home cũ, chưa bật ảo hóa trong BIOS).');
+      AppToast.error(context, 'Không thể ${enable ? 'bật' : 'tắt'} tăng tốc máy ảo (WHPX). Bạn đã từ chối quyền Administrator hoặc Windows không hỗ trợ (bản Home cũ, chưa bật ảo hóa trong BIOS).');
       return;
     }
 
@@ -96,7 +96,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Cần khởi động lại máy'),
-        content: Text('Đã ${enable ? 'bật' : 'tắt'} Hyper-V thành công. Khởi động lại máy ngay để áp dụng?'),
+        content: Text('Đã ${enable ? 'bật' : 'tắt'} tăng tốc máy ảo (WHPX) thành công. Khởi động lại máy ngay để áp dụng?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Để sau')),
           ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Khởi động lại')),
@@ -136,7 +136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Tăng tốc máy ảo (Hyper-V / WHPX)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const Text('Tăng tốc máy ảo (WHPX)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 2),
                 Text(subtitle, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
               ],

@@ -5,7 +5,7 @@ import 'package:path/path.dart' as p;
 /// Trạng thái tăng tốc phần cứng cho Android Emulator trên Windows.
 enum HypervisorState { enabled, disabled, pendingRestart, unknown }
 
-/// Quản lý bật/tắt tăng tốc máy ảo (Windows Hypervisor Platform + Hyper-V) trên Windows
+/// Quản lý bật/tắt tăng tốc máy ảo (Windows Hypervisor Platform - WHPX) trên Windows
 /// để Android Emulator chạy tăng tốc phần cứng, người dùng không phải gõ lệnh.
 ///
 /// Lưu ý: chỉ gỡ feature bằng DISM là CHƯA đủ để tắt hypervisor, vì các tính năng khác
@@ -64,8 +64,6 @@ class WindowsHypervisorService {
 \$ErrorActionPreference = 'Continue'
 dism.exe /Online /Enable-Feature /All /FeatureName:HypervisorPlatform /NoRestart /Quiet | Out-Null
 \$feat = \$LASTEXITCODE
-# Windows Home không có Hyper-V đầy đủ: bỏ qua lỗi của bước này
-dism.exe /Online /Enable-Feature /All /FeatureName:Microsoft-Hyper-V-All /NoRestart /Quiet | Out-Null
 bcdedit.exe /set hypervisorlaunchtype auto | Out-Null
 \$bcd = \$LASTEXITCODE
 "\$feat|\$bcd" | Out-File -Encoding ascii -FilePath '$resultPath'
@@ -77,7 +75,6 @@ bcdedit.exe /set hypervisorlaunchtype off | Out-Null
 \$bcd = \$LASTEXITCODE
 dism.exe /Online /Disable-Feature /FeatureName:HypervisorPlatform /NoRestart /Quiet | Out-Null
 \$feat = \$LASTEXITCODE
-dism.exe /Online /Disable-Feature /FeatureName:Microsoft-Hyper-V-All /NoRestart /Quiet | Out-Null
 "\$feat|\$bcd" | Out-File -Encoding ascii -FilePath '$resultPath'
 ''';
 
