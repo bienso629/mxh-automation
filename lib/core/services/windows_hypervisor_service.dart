@@ -1,22 +1,27 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 /// Trạng thái tăng tốc phần cứng cho Android Emulator trên Windows.
 enum HypervisorState { enabled, disabled, pendingRestart, unknown }
 
-/// Quản lý bật/tắt Hyper-V và Windows Hypervisor Platform (WHPX) trên Windows
+/// Quản lý bật/tắt tăng tốc máy ảo (Windows Hypervisor Platform + Hyper-V) trên Windows
 /// để Android Emulator chạy tăng tốc phần cứng, người dùng không phải gõ lệnh.
+///
+/// Lưu ý: chỉ gỡ feature bằng DISM là CHƯA đủ để tắt hypervisor, vì các tính năng khác
+/// (WSL2, Docker, Windows Sandbox, Memory Integrity/VBS) vẫn khởi động hypervisor lúc boot.
+/// Vì vậy phải kết hợp thêm `bcdedit /set hypervisorlaunchtype off|auto`.
 class WindowsHypervisorService {
   static final WindowsHypervisorService _instance = WindowsHypervisorService._internal();
   factory WindowsHypervisorService() => _instance;
   WindowsHypervisorService._internal();
 
-  static const List<String> _features = ['HypervisorPlatform', 'Microsoft-Hyper-V-All'];
-
   bool get isSupported => Platform.isWindows;
 
-  /// Kiểm tra trạng thái WHPX (không cần quyền Administrator).
-  /// Win32_OptionalFeature.InstallState: 1 = Enabled, 2 = Disabled, 3 = Absent.
+  /// Kiểm tra trạng thái thực tế (không cần quyền Administrator):
+  /// - `HypervisorPresent`: hypervisor có đang thật sự chạy hay không.
+  /// - `InstallState` của feature HypervisorPlatform: 1 = Enabled, 2 = Disabled, 3 = Absent.
+  /// Chỉ coi là "bật" khi cả hai đều đúng (emulator cần cả hai để dùng WHPX).
   Future<HypervisorState> getState() async {
     if (!isSupported) return HypervisorState.unknown;
     try {
@@ -24,37 +29,88 @@ class WindowsHypervisorService {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        "(Get-CimInstance -ClassName Win32_OptionalFeature -Filter \"Name='HypervisorPlatform'\").InstallState",
+        "\$hp = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; "
+            "\$fs = (Get-CimInstance -ClassName Win32_OptionalFeature -Filter \"Name='HypervisorPlatform'\").InstallState; "
+            "Write-Output \"\$hp|\$fs\"",
       ]);
       final out = res.stdout.toString().trim();
-      if (out == '1') return HypervisorState.enabled;
-      if (out == '2' || out == '3') return HypervisorState.disabled;
-      return HypervisorState.unknown;
+      debugPrint('[Hypervisor] Trạng thái: $out');
+      final parts = out.split('|');
+      if (parts.length != 2) return HypervisorState.unknown;
+      final running = parts[0].trim().toLowerCase() == 'true';
+      final featureOn = parts[1].trim() == '1';
+      return (running && featureOn) ? HypervisorState.enabled : HypervisorState.disabled;
     } catch (e) {
       debugPrint('[Hypervisor] Lỗi kiểm tra trạng thái: $e');
       return HypervisorState.unknown;
     }
   }
 
-  /// Bật hoặc tắt Hyper-V + WHPX. Windows sẽ hiện hộp thoại UAC xin quyền Administrator.
-  /// Trả về true nếu lệnh DISM chạy thành công (cần khởi động lại máy để áp dụng).
+  /// Bật hoặc tắt tăng tốc máy ảo. Windows sẽ hiện hộp thoại UAC xin quyền Administrator.
+  /// Trả về true nếu thao tác thành công (cần khởi động lại máy để áp dụng).
   Future<bool> setEnabled(bool enable) async {
     if (!isSupported) return false;
-    final action = enable ? '/Enable-Feature /All' : '/Disable-Feature';
-    final dismCmds = _features
-        .map((f) => 'dism.exe /Online $action /FeatureName:$f /NoRestart /Quiet')
-        .join('; ');
-    // Mã 0 = thành công, 3010 = thành công nhưng cần khởi động lại.
-    final inner = '$dismCmds; exit \$LASTEXITCODE';
-    final script = "\$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
-        "-ArgumentList '-NoProfile','-Command','${inner.replaceAll("'", "''")}'; exit \$p.ExitCode";
+
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final tempDir = Directory.systemTemp.path;
+    final scriptFile = File(p.join(tempDir, 'agent_mxh_hyperv_$stamp.ps1'));
+    final resultFile = File(p.join(tempDir, 'agent_mxh_hyperv_$stamp.txt'));
+
+    // Ghi script ra file .ps1 để tránh lỗi escape chuỗi khi truyền qua Start-Process -Verb RunAs.
+    // Kết quả từng bước được ghi ra file txt để đọc lại chính xác (không phụ thuộc ExitCode).
+    final resultPath = resultFile.path.replaceAll("'", "''");
+    final script = enable
+        ? '''
+\$ErrorActionPreference = 'Continue'
+dism.exe /Online /Enable-Feature /All /FeatureName:HypervisorPlatform /NoRestart /Quiet | Out-Null
+\$feat = \$LASTEXITCODE
+# Windows Home không có Hyper-V đầy đủ: bỏ qua lỗi của bước này
+dism.exe /Online /Enable-Feature /All /FeatureName:Microsoft-Hyper-V-All /NoRestart /Quiet | Out-Null
+bcdedit.exe /set hypervisorlaunchtype auto | Out-Null
+\$bcd = \$LASTEXITCODE
+"\$feat|\$bcd" | Out-File -Encoding ascii -FilePath '$resultPath'
+'''
+        : '''
+\$ErrorActionPreference = 'Continue'
+# Chặn hypervisor khởi động lúc boot (kể cả khi WSL2 / Docker / Sandbox / VBS còn bật)
+bcdedit.exe /set hypervisorlaunchtype off | Out-Null
+\$bcd = \$LASTEXITCODE
+dism.exe /Online /Disable-Feature /FeatureName:HypervisorPlatform /NoRestart /Quiet | Out-Null
+\$feat = \$LASTEXITCODE
+dism.exe /Online /Disable-Feature /FeatureName:Microsoft-Hyper-V-All /NoRestart /Quiet | Out-Null
+"\$feat|\$bcd" | Out-File -Encoding ascii -FilePath '$resultPath'
+''';
+
     try {
-      final res = await Process.run('powershell', ['-NoProfile', '-Command', script]);
-      debugPrint('[Hypervisor] exit=${res.exitCode} stderr=${res.stderr}');
-      return res.exitCode == 0 || res.exitCode == 3010;
+      scriptFile.writeAsStringSync(script);
+      final scriptPath = scriptFile.path.replaceAll("'", "''");
+      final launcher = "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
+          "-ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File \"' + '$scriptPath' + '\"')";
+      final res = await Process.run('powershell', ['-NoProfile', '-Command', launcher]);
+      debugPrint('[Hypervisor] launcher exit=${res.exitCode} stderr=${res.stderr}');
+
+      // Không có file kết quả => người dùng bấm "No" ở hộp thoại UAC
+      if (!resultFile.existsSync()) return false;
+      final parts = resultFile.readAsStringSync().trim().split('|');
+      debugPrint('[Hypervisor] Kết quả (feature|bcdedit): $parts');
+      if (parts.length != 2) return false;
+
+      // DISM: 0 = OK, 3010 = OK cần restart. Khi tắt: feature vốn chưa bật cũng chấp nhận.
+      const okFeat = {'0', '3010'};
+      final feat = parts[0].trim();
+      final bcd = parts[1].trim();
+      final featOk = okFeat.contains(feat) || (!enable && feat != '');
+      return featOk && bcd == '0';
     } catch (e) {
       debugPrint('[Hypervisor] Lỗi bật/tắt: $e');
       return false;
+    } finally {
+      try {
+        if (scriptFile.existsSync()) scriptFile.deleteSync();
+      } catch (_) {}
+      try {
+        if (resultFile.existsSync()) resultFile.deleteSync();
+      } catch (_) {}
     }
   }
 

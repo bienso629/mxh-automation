@@ -70,7 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: Text(enable ? 'Bật Hyper-V cho máy ảo' : 'Tắt Hyper-V'),
         content: Text(enable
             ? 'Windows sẽ hỏi quyền Administrator để bật Hyper-V và Windows Hypervisor Platform giúp máy ảo Android chạy nhanh hơn.\n\nSau khi bật xong cần khởi động lại máy.'
-            : 'Windows sẽ hỏi quyền Administrator để tắt Hyper-V và Windows Hypervisor Platform.\n\nSau khi tắt xong cần khởi động lại máy.'),
+            : 'Windows sẽ hỏi quyền Administrator để tắt hẳn Hyper-V và Windows Hypervisor Platform.\n\nLưu ý: WSL2, Docker Desktop, Windows Sandbox và tính năng Memory Integrity cũng sẽ ngừng hoạt động cho đến khi bật lại. Máy ảo Android sẽ chạy rất chậm.\n\nSau khi tắt xong cần khởi động lại máy.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
           ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Đồng ý')),
