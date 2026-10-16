@@ -11,8 +11,12 @@ echo "========================================================"
 
 cd "$APP_DIR"
 
-echo "[1/4] Dang bien dich Flutter Linux Release..."
-flutter build linux --release
+if [ ! -f "$APP_DIR/build/linux/x64/release/bundle/agent_mxh_auto" ]; then
+    echo "[1/4] Dang bien dich Flutter Linux Release..."
+    flutter build linux --release
+else
+    echo "[1/4] Da co san ban bien dich Flutter Linux Release."
+fi
 
 echo "[2/4] Chuan bi cau truc goi cai dat .deb..."
 PKG_NAME="mxh-tu-dong_1.0.0_amd64"
@@ -147,11 +151,7 @@ mkdir -p "$DIST_DIR"
 dpkg-deb --build "$PKG_DIR" "$DIST_DIR/mxh-tu-dong_1.0.0_amd64.deb"
 rm -rf "$PKG_DIR"
 
-echo "[4/4] Tao ban nen Portable .tar.gz..."
-cd "$APP_DIR/build/linux/x64/release/bundle"
-tar -czf "$DIST_DIR/MXH-Tu-Dong-Portable-Ubuntu-x64.tar.gz" .
-
-# Tao script cai dat tu dong ho tro don dep ban cu (install.sh)
+echo "[4/4] Tao script cai dat tu dong ho tro don dep ban cu (install.sh)..."
 cat << 'INSTALL_SH_EOF' > "$DIST_DIR/install.sh"
 #!/bin/bash
 set -e
@@ -209,11 +209,11 @@ RUNNER_EOF
 chmod +x ~/.local/bin/mxh-tu-dong
 
 mkdir -p ~/.local/share/applications
-cat << 'USER_DESK_EOF' > ~/.local/share/applications/mxh-tu-dong.desktop
+cat << USER_DESK_EOF > ~/.local/share/applications/mxh-tu-dong.desktop
 [Desktop Entry]
 Name=Diễn viên MXH
 Comment=Diễn viên MXH
-Exec=/home/yenai/.local/bin/mxh-tu-dong %u
+Exec=$HOME/.local/bin/mxh-tu-dong %u
 Icon=mxh-tu-dong
 Terminal=false
 Type=Application
@@ -225,8 +225,9 @@ chmod +x ~/.local/share/applications/mxh-tu-dong.desktop
 
 echo "[3/3] Lam moi cache icon va desktop entry..."
 for s in 16 24 32 48 64 128 256 512; do
-    mkdir -p ~/.local/share/icons/hicolor/${s}x${s}/apps
-    cp /usr/share/icons/hicolor/${s}x${s}/apps/mxh-tu-dong.png ~/.local/share/icons/hicolor/${s}x${s}/apps/ 2>/dev/null || true
+    s_clean="${s%,}"
+    mkdir -p ~/.local/share/icons/hicolor/${s_clean}x${s_clean}/apps
+    cp /usr/share/icons/hicolor/${s_clean}x${s_clean}/apps/mxh-tu-dong.png ~/.local/share/icons/hicolor/${s_clean}x${s_clean}/apps/ 2>/dev/null || true
 done
 mkdir -p ~/.local/share/pixmaps
 cp /usr/share/pixmaps/mxh-tu-dong.png ~/.local/share/pixmaps/ 2>/dev/null || true
@@ -249,5 +250,4 @@ echo "========================================================"
 echo " HOAN TAT DONG GOI CHO UBUNTU!"
 echo " File cai dat .deb: $DIST_DIR/mxh-tu-dong_1.0.0_amd64.deb"
 echo " File script cai:   $DIST_DIR/install.sh"
-echo " File portable:    $DIST_DIR/MXH-Tu-Dong-Portable-Ubuntu-x64.tar.gz"
 echo "========================================================"

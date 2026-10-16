@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows EXE & Installer
+    name: Build Windows Setup Installer (.exe)
     runs-on: windows-latest
 
     steps:
@@ -38,17 +38,12 @@ jobs:
         run: |
           flutter build windows --release
 
-      - name: Package Portable ZIP
+      - name: Compile Inno Setup Installer
         shell: pwsh
         run: |
           $distDir = "dist-flutter"
           if (!(Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force }
-          Compress-Archive -Path 'build\windows\x64\runner\Release\*' -DestinationPath "$distDir\MXH-Tu-Dong-Portable-Windows-x64.zip" -Force
-          Write-Host "Portable ZIP created at: $distDir\MXH-Tu-Dong-Portable-Windows-x64.zip"
 
-      - name: Compile Inno Setup Installer
-        shell: pwsh
-        run: |
           $isccCandidates = @(
             (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
             "C:\ProgramData\chocolatey\bin\iscc.exe",
@@ -71,8 +66,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: MXH-Tu-Dong-Windows-Release
+          name: MXH-Tu-Dong-Windows-Installer
           path: |
-            dist-flutter/*.zip
-            dist-flutter/*.exe
+            dist-flutter/MXH-Tu-Dong-Setup-x64.exe
           retention-days: 14
