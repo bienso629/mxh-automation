@@ -52,7 +52,7 @@ im = Image.open(src)
 for s in sizes:
     d = os.path.join(base, f'{s}x{s}', 'apps')
     os.makedirs(d, exist_ok=True)
-    resized = im.resize((s, s), Image.Resampling.LANCZOS)
+    resized = im.resize((s, s), getattr(Image, 'Resampling', Image).LANCZOS)
     for n in ['mxh-tu-dong', 'agent.mxh.auto', 'agent_mxh_auto']:
         resized.save(os.path.join(d, f'{n}.png'), format='PNG')
 "
