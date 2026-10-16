@@ -158,6 +158,37 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     }
   }
 
+  Future<void> _handlePickExistingAvatar(
+    PersonaProfile persona, {
+    void Function(void Function())? setModalState,
+  }) async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['png', 'jpg', 'jpeg', 'webp'],
+        dialogTitle: 'Chọn ảnh avatar cho ${persona.name} (${persona.ip})',
+      );
+      if (res == null || res.files.isEmpty || res.files.single.path == null) {
+        return;
+      }
+      final pickedPath = res.files.single.path!;
+      final savedPath = await _personaService.setCustomAvatarFromFile(persona, pickedPath);
+      if (mounted) {
+        final current = _personas[persona.ip] ?? persona;
+        final updated = current.copyWith(avatarUrl: savedPath);
+        setState(() {
+          _personas[persona.ip] = updated;
+        });
+        setModalState?.call(() {});
+        AppToast.success(context, 'Đã cập nhật avatar cho ${persona.name}!');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi khi chọn avatar có sẵn: $e');
+      }
+    }
+  }
+
   void _showAvatarPreviewDialog(PersonaProfile persona, {void Function(void Function())? setModalState}) {
     showDialog(
       context: context,
@@ -347,36 +378,66 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          ElevatedButton.icon(
-                            onPressed: isGenerating
-                                ? null
-                                : () async {
-                                    await _handleGenerateAvatar(
-                                      currentP,
-                                      setModalState: (fn) {
-                                        setPreviewState(fn);
-                                        setModalState?.call(fn);
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ElevatedButton.icon(
+                                onPressed: isGenerating
+                                    ? null
+                                    : () async {
+                                        await _handleGenerateAvatar(
+                                          currentP,
+                                          setModalState: (fn) {
+                                            setPreviewState(fn);
+                                            setModalState?.call(fn);
+                                          },
+                                        );
                                       },
-                                    );
-                                  },
-                            icon: isGenerating
-                                ? const SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF070B14)),
-                                  )
-                                : const Icon(Icons.auto_awesome_rounded, size: 15),
-                            label: Text(
-                              isGenerating ? 'Đang vẽ ảnh...' : 'AI vẽ lại avatar',
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: const Color(0xFF070B14),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                            ),
+                                icon: isGenerating
+                                    ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF070B14)),
+                                      )
+                                    : const Icon(Icons.auto_awesome_rounded, size: 15),
+                                label: Text(
+                                  isGenerating ? 'Đang vẽ ảnh...' : 'AI vẽ lại avatar',
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: const Color(0xFF070B14),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              OutlinedButton.icon(
+                                onPressed: isGenerating
+                                    ? null
+                                    : () async {
+                                        await _handlePickExistingAvatar(
+                                          currentP,
+                                          setModalState: (fn) {
+                                            setPreviewState(fn);
+                                            setModalState?.call(fn);
+                                          },
+                                        );
+                                      },
+                                icon: const Icon(Icons.photo_library_outlined, size: 15, color: AppColors.primaryLight),
+                                label: const Text(
+                                  'Chọn avatar có sẵn',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: AppColors.textWhite,
+                                  side: BorderSide(color: AppColors.primary.withValues(alpha: 0.6)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                ),
+                              ),
+                            ],
                           ),
                           OutlinedButton(
                             onPressed: () => Navigator.of(ctx).pop(),

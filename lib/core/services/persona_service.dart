@@ -372,6 +372,45 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
   }
 
   /// Sinh hình ảnh Avatar AI dựa trên avatarPrompt của Nhân vật
+
+  Future<String> setCustomAvatarFromFile(PersonaProfile persona, String sourceFilePath) async {
+    final sourceFile = File(sourceFilePath);
+    if (!await sourceFile.exists()) {
+      throw Exception('Tệp ảnh không tồn tại: $sourceFilePath');
+    }
+
+    final home = Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        Directory.systemTemp.path;
+    final avatarDir = Directory(p.join(home, '.agent_mxh_auto', 'avatars'));
+    if (!avatarDir.existsSync()) {
+      avatarDir.createSync(recursive: true);
+    }
+
+    final sanitizedIp = persona.ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final ext = p.extension(sourceFilePath).isNotEmpty ? p.extension(sourceFilePath).toLowerCase() : '.png';
+    final localImagePath = p.join(avatarDir.path, 'avatar_${sanitizedIp}_$timestamp$ext');
+
+    try {
+      if (avatarDir.existsSync()) {
+        final existingFiles = avatarDir.listSync();
+        for (final file in existingFiles) {
+          if (file is File && p.basename(file.path).startsWith('avatar_$sanitizedIp')) {
+            try {
+              file.deleteSync();
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+
+    await sourceFile.copy(localImagePath);
+    final updated = persona.copyWith(avatarUrl: localImagePath);
+    await updatePersona(updated);
+    return localImagePath;
+  }
+
   Future<String> generateAvatarImage(PersonaProfile persona) async {
     final cfg = await _configService.loadConfig();
     var baseUrl = cfg['proxy_base_url']?.toString() ?? 'https://api.mitom.ai/v1';
@@ -384,7 +423,9 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
     final apiKey = cfg['proxy_api_key']?.toString() ?? '';
 
     // Thư mục lưu trữ avatar cục bộ
-    final home = Platform.environment['HOME'] ?? '';
+    final home = Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        Directory.systemTemp.path;
     final avatarDir = Directory(p.join(home, '.agent_mxh_auto', 'avatars'));
     if (!avatarDir.existsSync()) {
       avatarDir.createSync(recursive: true);
