@@ -328,7 +328,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       final safePage = totalPages == 0 ? 1 : personaCurrentPage.clamp(1, totalPages);
                       final startIndex = (safePage - 1) * personaPageSize;
                       final pagePersonas = allPersonas.skip(startIndex).take(personaPageSize).toList();
-                      final allInPageSelected = pagePersonas.isNotEmpty && pagePersonas.every((p) => selectedIps.contains(p.ip));
+                      final allInPageSelected = pagePersonas.isNotEmpty && pagePersonas.every((p) => selectedIps.contains(p.effectiveEntryKey));
 
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -351,11 +351,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         setDialogState(() {
                                           if (allInPageSelected) {
                                             for (final p in pagePersonas) {
-                                              selectedIps.remove(p.ip);
+                                              selectedIps.remove(p.effectiveEntryKey);
                                             }
                                           } else {
                                             for (final p in pagePersonas) {
-                                              selectedIps.add(p.ip);
+                                              selectedIps.add(p.effectiveEntryKey);
                                             }
                                           }
                                         });
@@ -403,7 +403,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         if (selectedIps.length == totalPersonas) {
                                           selectedIps.clear();
                                         } else {
-                                          selectedIps.addAll(allPersonas.map((p) => p.ip));
+                                          selectedIps.addAll(allPersonas.map((p) => p.effectiveEntryKey));
                                         }
                                       });
                                     },
@@ -523,16 +523,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     separatorBuilder: (context, index) => const Divider(height: 1, color: AppColors.borderDark),
                                     itemBuilder: (context, idx) {
                                       final p = pagePersonas[idx];
-                                      final isSelected = selectedIps.contains(p.ip);
+                                      final isSelected = selectedIps.contains(p.effectiveEntryKey);
                                       final hasAvatar = p.avatarUrl != null && p.avatarUrl!.isNotEmpty;
 
                                       return InkWell(
                                         onTap: () {
                                           setDialogState(() {
                                             if (isSelected) {
-                                              selectedIps.remove(p.ip);
+                                              selectedIps.remove(p.effectiveEntryKey);
                                             } else {
-                                              selectedIps.add(p.ip);
+                                              selectedIps.add(p.effectiveEntryKey);
                                             }
                                           });
                                         },
@@ -1941,11 +1941,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   itemCount: task.personaIps.length,
                   separatorBuilder: (context, index) => const SizedBox(width: 5),
                   itemBuilder: (context, pIdx) {
-                    final ip = task.personaIps[pIdx];
-                    final p = _personasMap[ip];
+                    final key = task.personaIps[pIdx];
+                    final p = _personasMap[key] ?? _personasMap[key.split('##').first];
                     final initial = (p != null && p.name.isNotEmpty) ? p.name[0].toUpperCase() : '?';
                     return Tooltip(
-                      message: p != null ? '${p.name} ($ip)' : ip,
+                      message: p != null ? '${p.name} (${p.ip})' : key,
                       child: CircleAvatar(
                         radius: 12,
                         backgroundColor: AppColors.sidebarBg,

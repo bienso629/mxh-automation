@@ -65,3 +65,6 @@ dist-flutter/
 dist-macos/
 dist/
 uploads/
+
+# Dev tool AST cache
+*knowledge-cache/

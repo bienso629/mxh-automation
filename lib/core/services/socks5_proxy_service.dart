@@ -236,9 +236,17 @@ class Socks5ProxyService extends ChangeNotifier {
   Socks5Session? getSession(String ip) => _activeSessions[ip];
 
   /// Quét xem trên hệ thống OS có tiến trình trình duyệt nào đang chạy profile của IP này không
-  bool _isSystemProcessAliveForIp(String ip) {
+  bool _isSystemProcessAliveForIp(String ip, {String? entryKey}) {
+    // Khóa track: ưu tiên entryKey của nhân vật, fallback về IP cho luồng cũ
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
+        ? entryKey.trim()
+        : ip;
+    final isRootKey = trackKey == ip;
+    final dirName = isRootKey
+        ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}'
+        : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
     try {
-      final session = _activeSessions[ip];
+      final session = _activeSessions[trackKey];
       // Nếu có đối tượng Process đang giữ và chưa thoát
       if (session != null && session.browserProcess != null) {
         return true;
@@ -253,12 +261,11 @@ class Socks5ProxyService extends ChangeNotifier {
             return true;
           }
           // Sau 5 giây, kiểm tra thực tế xem profile lock có còn tồn tại không
-          final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
           final homeDir = Platform.environment['USERPROFILE'] ??
               Platform.environment['HOME'] ??
               Directory.systemTemp.path;
-          final lockFile = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', 'ip_$sanitizedIp', 'lockfile'));
-          final singletonLock = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', 'ip_$sanitizedIp', 'SingletonLock'));
+          final lockFile = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName, 'lockfile'));
+          final singletonLock = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName, 'SingletonLock'));
           if (lockFile.existsSync() || singletonLock.existsSync()) {
             return true;
           }
@@ -268,8 +275,7 @@ class Socks5ProxyService extends ChangeNotifier {
         }
       }
 
-      final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final needle = 'browser_profiles/ip_$sanitizedIp';
+      final needle = 'browser_profiles/$dirName';
 
       if (Platform.isLinux) {
         final procDir = Directory('/proc');
@@ -477,8 +483,22 @@ class Socks5ProxyService extends ChangeNotifier {
   }
 
   /// Kiểm tra xem trình duyệt gắn với IP này có đang mở hay không
-  bool isBrowserRunningForIp(String ip) {
-    return _isSystemProcessAliveForIp(ip);
+  bool isBrowserRunningForIp(String ip, {String? entryKey}) {
+    return _isSystemProcessAliveForIp(ip, entryKey: entryKey);
+  }
+
+  /// Kiểm tra xem có BẤT KỲ nhân vật nào (gốc hoặc phụ) của IP này đang mở trình duyệt hay không
+  bool isAnyBrowserRunningForIp(String ip) {
+    if (isBrowserRunningForIp(ip)) {
+      return true;
+    }
+    // Quét các khóa nhân vật phụ dạng 'ip##n' trong danh sách session đang track
+    for (final key in _activeSessions.keys) {
+      if (key.startsWith('$ip##') && isBrowserRunningForIp(ip, entryKey: key)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Kiểm tra xem mobile device gắn với IP này có đang chạy hay không
@@ -1142,9 +1162,18 @@ class Socks5ProxyService extends ChangeNotifier {
     required String ip,
     ServerModel? server,
     String? startUrl,
+    String? browserProfileId,
+    String? entryKey,
   }) async {
+    // Khóa định danh nhân vật: nhân vật gốc dùng chính IP, nhân vật phụ dùng 'ip##n'
+    // IP thật vẫn giữ vai trò địa chỉ mạng/proxy, entryKey chỉ phân biệt profile dữ liệu
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty) ? entryKey.trim() : ip;
+    final bool isRootPersona = trackKey == ip;
+    // Nhân vật gốc giữ nguyên thư mục ip_<ip> (tương thích dữ liệu cũ),
+    // nhân vật phụ dùng thư mục ek_<entryKey> để không giẫm chân nhau
+    final dirName = isRootPersona ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}' : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
     // Nếu trình duyệt của nhân vật này đang chạy sẵn rồi thì không mở thêm cửa sổ trùng lặp nữa
-    if (isBrowserRunningForIp(ip)) {
+    if (isBrowserRunningForIp(ip, entryKey: trackKey)) {
       debugPrint('[Browser] Trình duyệt cho IP $ip đang hoạt động, bỏ qua không mở thêm phiên trùng lặp.');
       return true;
     }
@@ -1155,14 +1184,19 @@ class Socks5ProxyService extends ChangeNotifier {
     }
 
     // Đường dẫn thư mục dữ liệu riêng cho từng IP để cô lập profile không ảnh hưởng trình duyệt gốc
-    final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-    final profileDir = Directory('${getBrowserProfilesDirectory().path}/ip_$sanitizedIp');
+    final profileDir = Directory('${getBrowserProfilesDirectory().path}/$dirName');
     if (!profileDir.existsSync()) {
       profileDir.createSync(recursive: true);
     }
 
+    // Nếu nhân vật được gán 1 profile của trình duyệt hệ thống thì mở đúng profile đó
+    // (browserProfileId rỗng = dùng user-data-dir cô lập riêng theo IP như cũ)
+    final bool useSystemProfile = browserProfileId != null && browserProfileId.trim().isNotEmpty;
+
     // Cấu hình ngôn ngữ tiếng Việt và tắt translate trong file Preferences của profile
-    try {
+    // (Bỏ qua khi dùng profile hệ thống để không đụng vào dữ liệu thật của trình duyệt)
+    if (!useSystemProfile) {
+      try {
       final defaultDir = Directory('${profileDir.path}/Default');
       if (!defaultDir.existsSync()) {
         defaultDir.createSync(recursive: true);
@@ -1187,10 +1221,12 @@ class Socks5ProxyService extends ChangeNotifier {
         'accept_languages': 'vi-VN,vi,en-US,en',
       };
       prefFile.writeAsStringSync(jsonEncode(prefData));
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     // Cấu hình Local State của Chrome cho profile (ép app_locale = vi)
-    try {
+    if (!useSystemProfile) {
+      try {
       final localStateFile = File('${profileDir.path}/Local State');
       Map<String, dynamic> localStateData = {};
       if (localStateFile.existsSync()) {
@@ -1206,10 +1242,11 @@ class Socks5ProxyService extends ChangeNotifier {
       }
       localStateData['intl'] = {'app_locale': 'vi'};
       localStateFile.writeAsStringSync(jsonEncode(localStateData));
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     // Ép buộc Facebook sử dụng giao diện Tiếng Việt bằng cách tiêm cookie locale=vi_VN vào profile
-    _ensureFacebookVietnameseCookie(profileDir.path);
+    if (!useSystemProfile) _ensureFacebookVietnameseCookie(profileDir.path);
 
     // Xử lý URL khởi chạy: nếu mở Facebook thì ưu tiên kèm locale=vi_VN
     var targetUrl = (startUrl != null && startUrl.isNotEmpty) ? startUrl : 'https://type.vn';
@@ -1234,7 +1271,9 @@ class Socks5ProxyService extends ChangeNotifier {
     }
 
     // Dọn dẹp triệt để các lock file Singleton và tiến trình cũ của profile này nếu bị crash trước đó
-    try {
+    // (Chỉ áp dụng cho profile cô lập, tuyệt đối không đụng lock của profile hệ thống)
+    if (!useSystemProfile) {
+      try {
       if (profileDir.existsSync()) {
         for (final entity in profileDir.listSync(followLinks: false)) {
           final baseName = entity.path.split(Platform.isWindows ? r'\' : '/').last;
@@ -1266,12 +1305,14 @@ class Socks5ProxyService extends ChangeNotifier {
           } catch (_) {}
         }
       }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     final isFirefox = executable.toLowerCase().contains('firefox');
     List<String> args;
     if (isFirefox) {
       args = [
+        if (useSystemProfile) ...['-P', browserProfileId],
         '-new-tab',
         targetUrl,
       ];
@@ -1304,7 +1345,9 @@ class Socks5ProxyService extends ChangeNotifier {
         // Chỉ thêm ozone platform x11 trên Linux để tránh xung đột Wayland NVIDIA
         if (Platform.isLinux) '--ozone-platform=x11',
         if (socks5Proxy != null) '--proxy-server=$socks5Proxy',
-        '--user-data-dir=${profileDir.path}',
+        // Dùng đúng profile hệ thống được gắn cho nhân vật nếu có
+        if (useSystemProfile) '--profile-directory=$browserProfileId',
+        if (!useSystemProfile) '--user-data-dir=${profileDir.path}',
         if (loadedExtensions.isNotEmpty) '--load-extension=${loadedExtensions.join(',')}',
         '--no-first-run',
         '--no-default-browser-check',
@@ -1346,7 +1389,7 @@ class Socks5ProxyService extends ChangeNotifier {
       Process? proc;
       final hasSystemdRun = Platform.isLinux && File('/usr/bin/systemd-run').existsSync();
       if (hasSystemdRun) {
-        final unitName = 'agy-browser-$sanitizedIp-${DateTime.now().millisecondsSinceEpoch}';
+        final unitName = 'agy-browser-$dirName-${DateTime.now().millisecondsSinceEpoch}';
         final systemdArgs = [
           '--user',
           '--unit=$unitName',
@@ -1374,7 +1417,7 @@ class Socks5ProxyService extends ChangeNotifier {
         session.browserLaunchedAt = DateTime.now();
       } else {
         // Lưu lại session cục bộ không SSH để theo dõi trạng thái tiến trình
-        final localSession = _activeSessions[ip] ?? Socks5Session(
+        final localSession = _activeSessions[trackKey] ?? Socks5Session(
           localPort: 0,
           server: server,
           ip: ip,
@@ -1383,7 +1426,7 @@ class Socks5ProxyService extends ChangeNotifier {
         );
         localSession.browserProcess = proc;
         localSession.browserLaunchedAt = DateTime.now();
-        _activeSessions[ip] = localSession;
+        _activeSessions[trackKey] = localSession;
       }
 
       notifyListeners();
@@ -1481,8 +1524,16 @@ except Exception:
     required ServerModel server,
     required String ip,
     String? startUrl,
+    String? browserProfileId,
+    String? entryKey,
   }) async {
-    return launchPersonaBrowser(ip: ip, server: server, startUrl: startUrl);
+    return launchPersonaBrowser(
+      ip: ip,
+      entryKey: entryKey,
+      server: server,
+      startUrl: startUrl,
+      browserProfileId: browserProfileId,
+    );
   }
 
   /// Thư mục chứa cấu hình và dữ liệu máy ảo Android AVD của người dùng
@@ -2921,19 +2972,37 @@ for root, _, files in os.walk(target_dir):
       await session.stop();
     }
     // Dừng triệt để các tiến trình trình duyệt gắn với profile của IP này nếu còn chạy ngầm
+    // (Bao gồm cả các nhân vật phụ ek_<entryKey> cùng dùng IP này)
     try {
       final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       if (!Platform.isWindows) {
         await Process.run('pkill', ['-f', 'browser_profiles/ip_$sanitizedIp']);
+        await Process.run('pkill', ['-f', 'browser_profiles/ek_$sanitizedIp']);
         await Process.run('pkill', ['-f', 'ip_$sanitizedIp']);
+      }
+    } catch (_) {}
+    // Giải phóng session cục bộ của các nhân vật phụ gắn với IP này
+    try {
+      final staleKeys = _activeSessions.keys
+          .where((k) => k.startsWith('$ip##'))
+          .toList();
+      for (final k in staleKeys) {
+        _activeSessions.remove(k);
       }
     } catch (_) {}
     notifyListeners();
   }
 
   /// Đóng riêng trình duyệt của IP mà không làm mất hầm SOCKS5 nếu device vẫn đang chạy
-  Future<void> closeBrowserForIp(String ip) async {
-    final session = _activeSessions[ip];
+  Future<void> closeBrowserForIp(String ip, {String? entryKey}) async {
+    // Khóa track của nhân vật: entryKey nếu có, fallback IP cho luồng cũ
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
+        ? entryKey.trim()
+        : ip;
+    final dirName = (trackKey == ip)
+        ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}'
+        : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
+    final session = _activeSessions[trackKey];
     if (session != null) {
       if (session.browserProcess != null) {
         try {
@@ -2944,10 +3013,9 @@ for root, _, files in os.walk(target_dir):
       session.browserLaunchedAt = null;
     }
     try {
-      final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       if (Platform.isWindows) {
         try {
-          final winProfileNeedle = 'browser_profiles\\\\ip_$sanitizedIp';
+          final winProfileNeedle = 'browser_profiles\\\\$dirName';
           await Process.run('powershell', [
             '-NoProfile',
             '-Command',
@@ -2955,12 +3023,12 @@ for root, _, files in os.walk(target_dir):
           ]);
         } catch (_) {}
       } else {
-        await Process.run('pkill', ['-f', 'browser_profiles/ip_$sanitizedIp']);
+        await Process.run('pkill', ['-f', 'browser_profiles/$dirName']);
       }
       final homeDir = Platform.environment['USERPROFILE'] ??
           Platform.environment['HOME'] ??
           Directory.systemTemp.path;
-      final profileDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', 'ip_$sanitizedIp'));
+      final profileDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName));
       if (profileDir.existsSync()) {
         for (final entity in profileDir.listSync(followLinks: false)) {
           final baseName = p.basename(entity.path);
@@ -2974,8 +3042,8 @@ for root, _, files in os.walk(target_dir):
     } catch (_) {}
 
     // Nếu device cũng không còn chạy thì giải phóng hoàn toàn session SOCKS5
-    if (!_isDeviceProcessAliveForIp(ip)) {
-      final s = _activeSessions.remove(ip);
+    if (!_isDeviceProcessAliveForIp(ip) && !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
+      final s = _activeSessions.remove(trackKey);
       if (s != null) {
         await s.stop();
       }

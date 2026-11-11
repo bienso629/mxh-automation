@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../../core/services/persona_service.dart';
+import '../../core/services/browser_profile_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
 import '../../core/services/smspool_service.dart';
 import '../../core/theme/app_theme.dart';
@@ -28,6 +29,8 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   final Set<String> _closingDeviceIps = {};
   final Set<String> _generatingAvatarIps = {};
   final Set<String> _generatingSingleProfileIps = {};
+  final Set<String> _addingSharedProfileIps = {}; // Các IP đang tạo profile tay
+  final Set<String> _deletingEntryKeys = {}; // Các nhân vật phụ đang bị xóa
   final Socks5ProxyService _socks5Service = Socks5ProxyService();
   final PersonaService _personaService = PersonaService();
 
@@ -35,6 +38,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   bool _isGeneratingPersonas = false;
   bool _isRepairing = false;
   Set<String> _availableAvds = {};
+  String? _detectedBrowserName; // Ten binary trinh duyet mac dinh cua may (vd: google-chrome, firefox)
 
   @override
   void initState() {
@@ -48,10 +52,18 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     try {
       avdList = await _socks5Service.getAvailableAvds();
     } catch (_) {}
+    String? browserName;
+    try {
+      final exe = _socks5Service.findBrowserExecutable();
+      if (exe != null && exe.isNotEmpty) {
+        browserName = exe.split(Platform.isWindows ? r'\' : '/').last;
+      }
+    } catch (_) {}
     if (mounted) {
       setState(() {
         _personas = Map.from(saved);
         _availableAvds = avdList.toSet();
+        _detectedBrowserName = browserName;
       });
     }
   }
@@ -136,10 +148,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     try {
       final avatarPathOrUrl = await _personaService.generateAvatarImage(persona);
       if (mounted) {
-        final current = _personas[persona.ip] ?? persona;
+        final current = _personas[persona.effectiveEntryKey] ?? persona;
         final updated = current.copyWith(avatarUrl: avatarPathOrUrl);
         setState(() {
-          _personas[persona.ip] = updated;
+          _personas[persona.effectiveEntryKey] = updated;
         });
         setModalState?.call(() {});
         AppToast.success(context, 'Đã tạo xong avatar AI cho ${persona.name}!');
@@ -174,10 +186,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
       final pickedPath = res.files.single.path!;
       final savedPath = await _personaService.setCustomAvatarFromFile(persona, pickedPath);
       if (mounted) {
-        final current = _personas[persona.ip] ?? persona;
+        final current = _personas[persona.effectiveEntryKey] ?? persona;
         final updated = current.copyWith(avatarUrl: savedPath);
         setState(() {
-          _personas[persona.ip] = updated;
+          _personas[persona.effectiveEntryKey] = updated;
         });
         setModalState?.call(() {});
         AppToast.success(context, 'Đã cập nhật avatar cho ${persona.name}!');
@@ -195,7 +207,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (dialogCtx, setPreviewState) {
-            final currentP = _personas[persona.ip] ?? persona;
+            final currentP = _personas[persona.effectiveEntryKey] ?? persona;
             final hasAvatar = currentP.avatarUrl != null && currentP.avatarUrl!.isNotEmpty;
             final isGenerating = _generatingAvatarIps.contains(currentP.ip);
 
@@ -496,6 +508,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     String? currentOrderId = persona.smsOrderId;
     String selectedDeviceType = persona.deviceType; // 'mobile' | 'tablet'
     String? selectedAvd = persona.avdName;
+    String? selectedBrowserProfileId = persona.browserProfileId;
+    String? selectedBrowserProfileName = persona.browserProfileName ?? persona.browserProfileId;
+    List<BrowserProfileInfo> availableBrowserProfiles = const [];
+    bool isLoadingBrowserProfiles = true;
     final agentInfoCtrl = TextEditingController(text: persona.agentInfo ?? '');
     List<String> availableAvds = [];
     bool isLoadingAvds = true;
@@ -549,16 +565,28 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
             Future.wait([
               _socks5Service.getAvailableAvds(),
               _socks5Service.hasDeviceForPersona(ip: persona.ip, personaName: persona.name, avdName: persona.avdName),
+              () async {
+                try {
+                  final exe = _socks5Service.findBrowserExecutable();
+                  if (exe == null || exe.isEmpty) return const <BrowserProfileInfo>[];
+                  return BrowserProfileService().listSystemProfiles(exe);
+                } catch (_) {
+                  return const <BrowserProfileInfo>[];
+                }
+              }(),
             ]).then((results) {
               if (dialogCtx.mounted) {
                 final avds = results[0] as List<String>;
                 final hasDev = results[1] as bool;
+                final browserProfiles = results[2] as List<BrowserProfileInfo>;
                 final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
                 final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
                 setDialogState(() {
                   availableAvds = avds;
                   hasPersonaAvd = hasDev || avds.contains(expectedPersonaAvd) || avds.contains(legacyPersonaClone);
                   isLoadingAvds = false;
+                  availableBrowserProfiles = browserProfiles;
+                  isLoadingBrowserProfiles = false;
                   if (selectedAvd == null && avds.isNotEmpty) {
                     if (avds.contains(expectedPersonaAvd)) {
                       selectedAvd = expectedPersonaAvd;
@@ -602,7 +630,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     child: Row(
                       children: [
                         () {
-                          final currentP = _personas[persona.ip] ?? persona;
+                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                           final isGen = _generatingAvatarIps.contains(currentP.ip);
                           final hasImg = currentP.avatarUrl != null && currentP.avatarUrl!.isNotEmpty;
 
@@ -893,7 +921,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   children: [
                                     InkWell(
                                       onTap: () {
-                                        final currentP = _personas[persona.ip] ?? persona;
+                                        final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                         if (_generatingAvatarIps.contains(currentP.ip)) return;
                                         final currentPWithForm = currentP.copyWith(
                                           name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : currentP.name,
@@ -1275,13 +1303,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                                 personaName: persona.name,
                                                                 baseAvd: selectedAvd ?? persona.avdName,
                                                               );
-                                                              final currentP = _personas[persona.ip] ?? persona;
+                                                              final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                               final updated = currentP.copyWith(avdName: createdAvd);
                                                               await _personaService.updatePersona(updated);
                                                               final freshAvds = await _socks5Service.getAvailableAvds();
                                                               if (mounted) {
                                                                 setState(() {
-                                                                  _personas[persona.ip] = updated;
+                                                                  _personas[persona.effectiveEntryKey] = updated;
                                                                   _availableAvds = freshAvds.toSet();
                                                                 });
                                                               }
@@ -1374,13 +1402,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                                 personaName: persona.name,
                                                                 archivePath: chosenPath,
                                                               );
-                                                              final currentP = _personas[persona.ip] ?? persona;
+                                                              final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                               final updated = currentP.copyWith(avdName: importedAvd);
                                                               await _personaService.updatePersona(updated);
                                                               final freshAvds = await _socks5Service.getAvailableAvds();
                                                               if (mounted) {
                                                                 setState(() {
-                                                                  _personas[persona.ip] = updated;
+                                                                  _personas[persona.effectiveEntryKey] = updated;
                                                                   _availableAvds = freshAvds.toSet();
                                                                 });
                                                               }
@@ -1552,13 +1580,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                               personaName: persona.name,
                                                               archivePath: chosenPath,
                                                             );
-                                                            final currentP = _personas[persona.ip] ?? persona;
+                                                            final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                             final updated = currentP.copyWith(avdName: importedAvd);
                                                             await _personaService.updatePersona(updated);
                                                             final freshAvds = await _socks5Service.getAvailableAvds();
                                                             if (mounted) {
                                                               setState(() {
-                                                                _personas[persona.ip] = updated;
+                                                                _personas[persona.effectiveEntryKey] = updated;
                                                                 _availableAvds = freshAvds.toSet();
                                                               });
                                                             }
@@ -1637,13 +1665,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                           try {
                                                             await _socks5Service.deleteAvd(avdToDelete, ip: persona.ip);
                                                             final freshAvds = await _socks5Service.getAvailableAvds();
-                                                            final currentP = _personas[persona.ip] ?? persona;
+                                                            final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                             final updated = currentP.copyWith(avdName: null);
                                                             await _personaService.updatePersona(updated);
 
                                                             if (mounted) {
                                                               setState(() {
-                                                                _personas[persona.ip] = updated;
+                                                                _personas[persona.effectiveEntryKey] = updated;
                                                                 _availableAvds = freshAvds.toSet();
                                                               });
                                                             }
@@ -1755,6 +1783,103 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   ],
                                 ),
                               ),
+                            const SizedBox(height: 12),
+                            // Gắn profile của trình duyệt hệ thống cho nhân vật
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: AppColors.inputBg,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: AppColors.borderDark),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.web_asset_rounded, size: 14, color: AppColors.accent),
+                                      const SizedBox(width: 6),
+                                      const Text(
+                                        'Profile trình duyệt hệ thống',
+                                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                                      ),
+                                      const Spacer(),
+                                      Text(
+                                        isLoadingBrowserProfiles
+                                            ? 'Đang dò...'
+                                            : ((_detectedBrowserName?.isNotEmpty ?? false) ? _detectedBrowserName! : 'Không rõ'),
+                                        style: const TextStyle(fontSize: 10.5, color: AppColors.textDim),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    height: 36,
+                                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.sidebarBg,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: AppColors.borderDark),
+                                    ),
+                                    child: DropdownButtonHideUnderline(
+                                      child: DropdownButton<String?>(
+                                        value: (selectedBrowserProfileId != null &&
+                                                availableBrowserProfiles.any((pr) => pr.id == selectedBrowserProfileId))
+                                            ? selectedBrowserProfileId
+                                            : null,
+                                        hint: Text(
+                                          isLoadingBrowserProfiles
+                                              ? 'Đang quét profile...'
+                                              : (availableBrowserProfiles.isEmpty
+                                                  ? 'Trình duyệt không có profile nào'
+                                                  : 'Dùng thư mục cô lập riêng (mặc định)'),
+                                          style: const TextStyle(fontSize: 11, color: AppColors.textDim),
+                                        ),
+                                        dropdownColor: AppColors.sidebarBg,
+                                        icon: const Icon(Icons.arrow_drop_down, size: 18, color: AppColors.textDim),
+                                        isExpanded: true,
+                                        style: const TextStyle(fontSize: 12, color: AppColors.textWhite),
+                                        items: [
+                                          const DropdownMenuItem<String?>(
+                                            value: null,
+                                            child: Text('Thư mục cô lập riêng (mặc định)', style: TextStyle(fontSize: 11.5, color: AppColors.textDim)),
+                                          ),
+                                          ...availableBrowserProfiles.map((pr) {
+                                            return DropdownMenuItem<String?>(
+                                              value: pr.id,
+                                              child: Text(
+                                                pr.labelWithEmail,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(fontSize: 11.5),
+                                              ),
+                                            );
+                                          }),
+                                        ],
+                                        onChanged: (val) {
+                                          setDialogState(() {
+                                            selectedBrowserProfileId = val;
+                                            String? matchedName;
+                                            for (final pr in availableBrowserProfiles) {
+                                              if (pr.id == val) {
+                                                matchedName = pr.displayLabel;
+                                                break;
+                                              }
+                                            }
+                                            selectedBrowserProfileName = matchedName ?? val;
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  const Text(
+                                    'Chọn profile của trình duyệt mặc định trên máy để nhân vật dùng chung cookie và phiên đăng nhập với trình duyệt thật.',
+                                    style: TextStyle(fontSize: 10, color: AppColors.textDim),
+                                  ),
+                                ],
+                              ),
+                            ),
                             const SizedBox(height: 12),
                             // Cấu hình Số điện thoại & Thuê số OTP
                             Container(
@@ -2121,7 +2246,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                           autoSyncPhoneToDevice = true;
                                                           latestOtpCode = null;
 
-                                                          final currentP = _personas[persona.ip] ?? persona;
+                                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                           final updated = currentP.copyWith(
                                                             phoneNumber: phoneCtrl.text.trim(),
                                                             smsOrderId: newOrderId,
@@ -2129,7 +2254,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                           await _personaService.updatePersona(updated);
                                                           if (mounted) {
                                                             setState(() {
-                                                              _personas[persona.ip] = updated;
+                                                              _personas[persona.effectiveEntryKey] = updated;
                                                             });
                                                           }
 
@@ -2354,12 +2479,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                         });
 
                                                         // Cập nhật lưu trữ database/json
-                                                        final currentP = _personas[persona.ip] ?? persona;
+                                                        final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                                         final updated = currentP.copyWith(smsOrderId: null);
                                                         await _personaService.updatePersona(updated);
                                                         if (mounted) {
                                                           setState(() {
-                                                            _personas[persona.ip] = updated;
+                                                            _personas[persona.effectiveEntryKey] = updated;
                                                           });
                                                         }
 
@@ -2422,9 +2547,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     return;
                                   }
                                   final newAge = int.tryParse(ageCtrl.text.trim()) ?? persona.age;
-                                  final currentP = _personas[persona.ip] ?? persona;
+                                  final currentP = _personas[persona.effectiveEntryKey] ?? persona;
                                   final updated = PersonaProfile(
                                     ip: persona.ip,
+                                    entryKey: persona.entryKey,
                                     name: newName,
                                     age: newAge,
                                     gender: selectedGender,
@@ -2440,6 +2566,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     phoneNumber: phoneCtrl.text.trim().isNotEmpty ? phoneCtrl.text.trim() : null,
                                     autoSyncPhoneToDevice: autoSyncPhoneToDevice,
                                     smsOrderId: currentOrderId,
+                                    deviceResolution: currentP.deviceResolution,
+                                    automationMacros: currentP.automationMacros,
+                                    browserProfileId: selectedBrowserProfileId,
+                                    browserProfileName: selectedBrowserProfileName,
                                   );
 
                                   setDialogState(() {
@@ -2450,9 +2580,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     await _personaService.updatePersona(updated);
                                     if (mounted) {
                                       setState(() {
-                                        _personas[updated.ip] = updated;
+                                        _personas[updated.effectiveEntryKey] = updated;
                                       });
-                                      AppToast.success(context, 'Đã lưu nhân vật cho IP ${updated.ip} vào Database!');
+                                      AppToast.success(context, 'Đã lưu nhân vật "${updated.name}" (IP ${updated.ip}) vào Database!');
                                     }
                                     if (dialogCtx.mounted) {
                                       Navigator.of(dialogCtx).pop();
@@ -2543,23 +2673,53 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     ));
 
     for (final personaIp in _personas.keys) {
-      if (!existingIps.contains(personaIp)) {
-        // Tìm xem IP này có khớp với server nào không
-        final matchedServer = servers.firstWhere(
-          (s) => s.serverIp == personaIp,
-          orElse: () => defaultServer,
-        );
-        allIpCards.add(
-          _ContactIpItem(
-            ip: personaIp,
-            isMain: personaIp == matchedServer.serverIp,
-            server: matchedServer,
-            isCurrentServer: true,
-          ),
-        );
-        existingIps.add(personaIp);
+      // Chi nhan cac IP that (bo qua khoa phu 'ip##n' - chung se lam card rieng ben duoi)
+      final ipRegex = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$');
+      final ipOnly = personaIp.split('##').first;
+      if (!ipRegex.hasMatch(personaIp)) continue;
+      if (existingIps.contains(ipOnly)) continue;
+      // Tìm xem IP này có khớp với server nào không
+      final matchedServer = servers.firstWhere(
+        (s) => s.serverIp == ipOnly,
+        orElse: () => defaultServer,
+      );
+      allIpCards.add(
+        _ContactIpItem(
+          ip: ipOnly,
+          isMain: ipOnly == matchedServer.serverIp,
+          server: matchedServer,
+          isCurrentServer: true,
+        ),
+      );
+      existingIps.add(ipOnly);
+    }
+
+    // Moi profile phu (entryKey dang 'ip##n') la 1 card rieng, dung sau card IP cua no
+    final cardsWithSubs = <_ContactIpItem>[];
+    for (final card in allIpCards) {
+      cardsWithSubs.add(card);
+      if (card.entryKey != null) continue;
+      final subs = _personaService
+          .getPersonasForIp(card.ip)
+          .where((p) => p.effectiveEntryKey != card.ip)
+          .toList()
+        ..sort((a, b) => a.effectiveEntryKey.compareTo(b.effectiveEntryKey));
+      for (int i = 0; i < subs.length; i++) {
+        final numPart = subs[i].effectiveEntryKey.split('##').last;
+        final idx = int.tryParse(numPart) ?? (i + 2);
+        cardsWithSubs.add(_ContactIpItem(
+          ip: card.ip,
+          isMain: card.isMain,
+          server: card.server,
+          isCurrentServer: card.isCurrentServer,
+          entryKey: subs[i].effectiveEntryKey,
+          profileIndex: idx,
+        ));
       }
     }
+    allIpCards
+      ..clear()
+      ..addAll(cardsWithSubs);
 
     final allTargetIps = allIpCards.map((e) => e.ip).toSet().toList();
 
@@ -2722,13 +2882,20 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                       if (crossAxisCount < 1) crossAxisCount = 1;
                       if (crossAxisCount > 5) crossAxisCount = 5;
 
+                      // Chieu cao card CO DINH vua khit noi dung: moi profile (kem ca profile
+                      // dung chung IP) da la mot card rieng trong luoi, khong con danh sach
+                      // profile phu nam ben trong card nen khong can phong theo so profile.
+                      // Thanh phan: header ~37px + body (avatar 42 + bio 40 + hang nut 26 + padding 16)
+                      // + footer ~53px -> du dia an toan, khong con khoang trong du thua.
+                      final double maxCardExtent = 236.0;
+
                       return GridView.builder(
                         padding: const EdgeInsets.all(16),
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount,
                           crossAxisSpacing: 14,
                           mainAxisSpacing: 14,
-                          mainAxisExtent: 250,
+                          mainAxisExtent: maxCardExtent,
                         ),
                         itemCount: allIpCards.length,
                         itemBuilder: (context, idx) {
@@ -2747,11 +2914,15 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   // Khung danh thiếp Contact Card cho từng IP
   Widget _buildContactCard(_ContactIpItem item) {
     final socks5 = context.watch<Socks5ProxyService>();
-    final isBrowserRunning = socks5.isBrowserRunningForIp(item.ip);
-    final isDeviceRunning = socks5.isDeviceRunningForIp(item.ip);
+    // Trang thai browser cua CHINH card nay (card phu co entryKey rieng dang 'ip##n')
+    final isBrowserRunning = socks5.isBrowserRunningForIp(item.ip, entryKey: item.entryKey);
+    final isSubProfile = item.entryKey != null;
+    final isDeviceRunning = !isSubProfile && socks5.isDeviceRunningForIp(item.ip);
     final isAnyRunning = isBrowserRunning || isDeviceRunning;
     final isAlias = !item.isMain;
-    final persona = _personas[item.ip];
+    final persona = isSubProfile
+        ? _personas[item.entryKey]
+        : (_personas[item.ip] ?? _personas.values.where((p) => p.ip == item.ip).firstOrNull);
 
     final Color cardBorderColor;
     final Color cardBgColor;
@@ -2852,57 +3023,57 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     ),
                   ),
                 ),
-                // Nút nhỏ AI tạo riêng profile cho IP này
+                // Nút nhỏ "Thêm profile" cho IP này (thay chỗ nút AI Profile cũ)
                 () {
-                  final isGeneratingThis = _generatingSingleProfileIps.contains(item.ip);
+                  final isAddingThis = _addingSharedProfileIps.contains(item.ip);
                   return Tooltip(
-                    message: isGeneratingThis
-                        ? 'Đang tạo profile cho ${item.ip}...'
-                        : (persona == null ? 'AI tạo profile riêng cho IP này' : 'AI tạo lại profile mới cho IP này'),
+                    message: isAddingThis
+                        ? 'Đang thêm profile cho ${item.ip}...'
+                        : 'Thêm profile mới dùng chung IP ${item.ip}',
                     child: InkWell(
-                      onTap: (isGeneratingThis || _isGeneratingPersonas)
+                      onTap: (isAddingThis || _isGeneratingPersonas)
                           ? null
-                          : () => _handleGenerateSinglePersona(item.ip),
+                          : () => _handleAddSharedProfile(item),
                       borderRadius: BorderRadius.circular(4),
                       child: Container(
                         height: 20,
                         padding: const EdgeInsets.symmetric(horizontal: 6),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: isGeneratingThis
-                              ? AppColors.primary.withValues(alpha: 0.25)
-                              : AppColors.primary.withValues(alpha: 0.15),
+                          color: isAddingThis
+                              ? AppColors.accent.withValues(alpha: 0.25)
+                              : AppColors.accent.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: AppColors.primary.withValues(alpha: isGeneratingThis ? 0.8 : 0.4),
+                            color: AppColors.accent.withValues(alpha: isAddingThis ? 0.8 : 0.4),
                             width: 0.8,
                           ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            if (isGeneratingThis)
+                            if (isAddingThis)
                               const SizedBox(
                                 width: 10,
                                 height: 10,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 1.5,
-                                  color: AppColors.primaryLight,
+                                  color: AppColors.accent,
                                 ),
                               )
                             else
                               const Icon(
-                                Icons.auto_awesome_rounded,
+                                Icons.add_rounded,
                                 size: 11,
-                                color: AppColors.primaryLight,
+                                color: AppColors.accent,
                               ),
                             const SizedBox(width: 4),
                             Text(
-                              isGeneratingThis ? 'Đang tạo...' : 'AI Profile',
+                              isAddingThis ? 'Đang thêm...' : 'Thêm profile',
                               style: const TextStyle(
                                 fontSize: 9.5,
                                 fontWeight: FontWeight.bold,
-                                color: AppColors.primaryLight,
+                                color: AppColors.accent,
                               ),
                             ),
                           ],
@@ -2922,7 +3093,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     ),
                   ),
                   child: Text(
-                    item.isMain ? 'IP GỐC' : 'ALIAS IP',
+                    isSubProfile
+                        ? 'PROFILE #${item.profileIndex ?? 2}'
+                        : (item.isMain ? 'IP GỐC' : 'ALIAS IP'),
                     style: TextStyle(
                       fontSize: 9.5,
                       fontWeight: FontWeight.w700,
@@ -3052,21 +3225,8 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Tên nhân vật hoặc hiển thị Chưa tạo (Có thể bấm để mở cấu hình)
-                            InkWell(
-                              onTap: () {
-                                final p = persona ?? PersonaProfile(
-                                  ip: item.ip,
-                                  name: 'Nhân vật ${item.ip}',
-                                  age: 25,
-                                  gender: 'Nam',
-                                  bio: 'Nhân vật tự động cho địa chỉ IP ${item.ip}',
-                                  avatarPrompt: '',
-                                );
-                                _showPersonaDetails(p);
-                              },
-                              borderRadius: BorderRadius.circular(4),
-                              child: Row(
+                            // Tên nhân vật (không bấm được, chỉ nút bút chì mới mở chi tiết và chỉnh sửa)
+                            Row(
                                 children: [
                                   Expanded(
                                     child: Text(
@@ -3127,7 +3287,6 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   ],
                                 ],
                               ),
-                            ),
                             const SizedBox(height: 3),
                             // IP và Trạng thái kết nối
                             Row(
@@ -3188,138 +3347,152 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
                   // Row 2: Bio kèm Nút Số điện thoại và Email ngay bên dưới
                   if (persona != null) ...[
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: AppColors.inputBg.withValues(alpha: 0.6),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: AppColors.borderDark.withValues(alpha: 0.5)),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: InkWell(
-                                      onTap: () => _showPersonaDetails(persona),
-                                      child: SingleChildScrollView(
-                                        child: Text(
-                                          persona.bio,
-                                          style: const TextStyle(fontSize: 11, color: AppColors.textDim, height: 1.3),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  () {
-                                    final isGeneratingThis = _generatingSingleProfileIps.contains(item.ip);
-                                    return Tooltip(
-                                      message: 'AI tạo lại nhân vật cho IP này',
-                                      child: InkWell(
-                                        onTap: (isGeneratingThis || _isGeneratingPersonas)
-                                            ? null
-                                            : () => _handleGenerateSinglePersona(item.ip),
-                                        borderRadius: BorderRadius.circular(4),
-                                        child: Container(
-                                          width: 26,
-                                          height: 26,
-                                          alignment: Alignment.center,
-                                          decoration: BoxDecoration(
-                                            color: AppColors.primary.withValues(alpha: 0.12),
-                                            borderRadius: BorderRadius.circular(4),
-                                            border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
-                                          ),
-                                          child: isGeneratingThis
-                                              ? const SizedBox(
-                                                  width: 12,
-                                                  height: 12,
-                                                  child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.primaryLight),
-                                                )
-                                              : const Icon(Icons.auto_awesome_rounded, size: 14, color: AppColors.primaryLight),
-                                        ),
-                                      ),
-                                    );
-                                  }(),
-                                  const SizedBox(width: 4),
-                                  Tooltip(
-                                    message: 'Xem chi tiết & Chỉnh sửa nhân vật',
-                                    child: InkWell(
-                                      onTap: () => _showPersonaDetails(persona),
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: Container(
-                                        width: 26,
-                                        height: 26,
-                                        alignment: Alignment.center,
-                                        decoration: BoxDecoration(
-                                          color: AppColors.primary.withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
-                                        ),
-                                        child: const Icon(Icons.edit_note_rounded, size: 16, color: AppColors.primaryLight),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Khung bio co chieu cao dinh 40px (~2 dong), nhan chu dai hon se cuon trong khung
+                        Container(
+                          width: double.infinity,
+                          height: 40,
+                          alignment: Alignment.topLeft,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: AppColors.inputBg.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: AppColors.borderDark.withValues(alpha: 0.5)),
+                          ),
+                          child: SingleChildScrollView(
+                            child: Text(
+                              persona.bio,
+                              style: const TextStyle(fontSize: 11, color: AppColors.textDim, height: 1.3),
                             ),
                           ),
-                          if ((persona.phoneNumber != null && persona.phoneNumber!.isNotEmpty) ||
-                              (persona.email != null && persona.email!.isNotEmpty)) ...[
-                            const SizedBox(height: 5),
-                            Row(
-                              children: [
-                                if (persona.phoneNumber != null && persona.phoneNumber!.isNotEmpty) ...[
-                                  InkWell(
+                        ),
+                        const SizedBox(height: 5),
+                          // Bộ nút hành động: nằm ngay dưới block giới thiệu profile, đồng bộ kích cỡ 26px
+                          Row(
+                            children: [
+                              () {
+                                final isGeneratingThis = _generatingSingleProfileIps.contains(item.ip);
+                                return Tooltip(
+                                  message: 'AI tạo lại nhân vật cho IP này',
+                                  child: InkWell(
+                                    onTap: (isGeneratingThis || _isGeneratingPersonas)
+                                        ? null
+                                        : () => _handleGenerateSinglePersona(item.ip),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Container(
+                                      width: 26,
+                                      height: 26,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: AppColors.primary.withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+                                      ),
+                                      child: isGeneratingThis
+                                          ? const SizedBox(
+                                              width: 12,
+                                              height: 12,
+                                              child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.primaryLight),
+                                            )
+                                          : const Icon(Icons.auto_awesome_rounded, size: 14, color: AppColors.primaryLight),
+                                    ),
+                                  ),
+                                );
+                              }(),
+                              const SizedBox(width: 4),
+                              Tooltip(
+                                message: 'Xóa profile nhân vật này',
+                                child: InkWell(
+                                  onTap: () => _handleDeleteMainPersona(persona),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Container(
+                                    width: 26,
+                                    height: 26,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: AppColors.danger.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: AppColors.danger.withValues(alpha: 0.3)),
+                                    ),
+                                    child: _deletingEntryKeys.contains(persona.effectiveEntryKey)
+                                        ? const SizedBox(
+                                            width: 12,
+                                            height: 12,
+                                            child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.danger),
+                                          )
+                                        : const Icon(Icons.delete_outline_rounded, size: 16, color: AppColors.danger),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Tooltip(
+                                message: 'Xem chi tiết & Chỉnh sửa nhân vật',
+                                child: InkWell(
+                                  onTap: () => _showPersonaDetails(persona),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Container(
+                                    width: 26,
+                                    height: 26,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+                                    ),
+                                    child: const Icon(Icons.edit_note_rounded, size: 16, color: AppColors.primaryLight),
+                                  ),
+                                ),
+                              ),
+                              if (persona.phoneNumber != null && persona.phoneNumber!.isNotEmpty) ...[
+                                const SizedBox(width: 4),
+                                Tooltip(
+                                  message: 'Số điện thoại: ${persona.phoneNumber}${persona.autoSyncPhoneToDevice ? ' (Đã bật tự động gắn vào máy)' : ''} (Bấm để chép)',
+                                  child: InkWell(
                                     onTap: () => _copyToClipboard(persona.phoneNumber!, 'Số điện thoại'),
                                     borderRadius: BorderRadius.circular(4),
-                                    child: Tooltip(
-                                      message: 'Số điện thoại: ${persona.phoneNumber}${persona.autoSyncPhoneToDevice ? ' (Đã bật tự động gắn vào máy)' : ''} (Bấm để chép)',
-                                      child: Container(
-                                        height: 20,
-                                        width: 20,
-                                        alignment: Alignment.center,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF10B981).withValues(alpha: 0.2),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.5), width: 0.6),
-                                        ),
-                                        child: const Icon(Icons.phone_rounded, size: 11, color: Color(0xFF34D399)),
+                                    child: Container(
+                                      width: 26,
+                                      height: 26,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.5)),
                                       ),
+                                      child: const Icon(Icons.phone_rounded, size: 14, color: Color(0xFF34D399)),
                                     ),
                                   ),
-                                  const SizedBox(width: 6),
-                                ],
-                                if (persona.email != null && persona.email!.isNotEmpty) ...[
-                                  InkWell(
+                                ),
+                              ],
+                              if (persona.email != null && persona.email!.isNotEmpty) ...[
+                                const SizedBox(width: 4),
+                                Tooltip(
+                                  message: 'Email: ${persona.email} (Bấm để chép)',
+                                  child: InkWell(
                                     onTap: () => _copyToClipboard(persona.email!, 'Email'),
                                     borderRadius: BorderRadius.circular(4),
-                                    child: Tooltip(
-                                      message: 'Email: ${persona.email} (Bấm để chép)',
-                                      child: Container(
-                                        height: 20,
-                                        width: 20,
-                                        alignment: Alignment.center,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.2),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5), width: 0.6),
-                                        ),
-                                        child: const Icon(Icons.email_rounded, size: 11, color: Color(0xFFA78BFA)),
+                                    child: Container(
+                                      width: 26,
+                                      height: 26,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF8B5CF6).withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5)),
                                       ),
+                                      child: const Icon(Icons.email_rounded, size: 14, color: Color(0xFFA78BFA)),
                                     ),
                                   ),
-                                ],
+                                ),
                               ],
-                            ),
-                          ],
+                            ],
+                          ),
                         ],
                       ),
-                    ),
-                  ] else ...[
+                  ],
+                  if (persona == null) ...[
                     // Trạng thái Card mới tinh "Chưa tạo nhân vật": Có nút nổi bật "AI tạo Profile" và nút nhập thủ công
                     Expanded(
                       child: Container(
@@ -3440,7 +3613,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   _closingIps.add(item.ip);
                                 });
                                 try {
-                                  await _socks5Service.closeBrowserForIp(item.ip);
+                                  await _socks5Service.closeBrowserForIp(item.ip, entryKey: item.entryKey);
                                   if (mounted) {
                                     AppToast.info(context, 'Đã đóng trình duyệt cho ${item.ip}');
                                   }
@@ -3493,6 +3666,8 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                 await _socks5Service.launchBrowserWithSocks5(
                                   server: item.server,
                                   ip: item.ip,
+                                  browserProfileId: persona?.browserProfileId,
+                                  entryKey: item.entryKey ?? persona?.effectiveEntryKey,
                                 );
                                 if (mounted) {
                                   AppToast.success(context, 'Đã mở trình duyệt qua ${item.ip}');
@@ -3537,7 +3712,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
                 const SizedBox(width: 6),
 
-                // 2. NÚT MỞ / ĐÓNG MOBILE DEVICE
+                // 2. NÚT MỞ / ĐÓNG MOBILE DEVICE (mọi card đều có device)
                 Expanded(
                   child: () {
                     final isOpeningDevice = _openingDeviceIps.contains(item.ip);
@@ -3598,7 +3773,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     }
 
                     final bool isExt = targetRemoteDevice != null;
-                    final currentP = _personas[item.ip] ?? persona;
+                    final currentP = _personas[persona?.effectiveEntryKey] ?? _personas[item.ip] ?? persona;
                     final sanitizedIp = item.ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
                     final expectedNameAvd = generatePersonaAvdName(ip: item.ip, personaName: currentP?.name);
                     final legacyPersonaAvd = 'Pixel_10_Pro_persona_$sanitizedIp';
@@ -3718,6 +3893,264 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     );
   }
 
+  /// Mo dialog tao moi profile: neu luu thanh cong tra ve profile da duoc luu DB,
+/// huy bo tra ve null. Tai su dung dialog chi tiet (thay vi nhan ban UI) bang phien ban dong.
+  Future<PersonaProfile?> _showPersonaDetailsForCreate(PersonaProfile persona) async {
+    final nameCtrl = TextEditingController(text: persona.name);
+    final ageCtrl = TextEditingController(text: persona.age.toString());
+    String selectedGender = persona.gender;
+    final bioCtrl = TextEditingController(text: persona.bio);
+    bool isSaving = false;
+
+    final result = await showDialog<PersonaProfile>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: AppColors.sidebarBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          title: Text(
+            'Thêm profile dùng chung IP ${persona.ip}',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'EntryKey: ${persona.effectiveEntryKey} (IP gốc: ${persona.ip})',
+                  style: const TextStyle(fontSize: 11, color: AppColors.textDim, fontFamily: 'monospace'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Tên nhân vật',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: ageCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Tuổi',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        style: const TextStyle(fontSize: 12.5),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: selectedGender,
+                        decoration: const InputDecoration(
+                          labelText: 'Giới tính',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const ['Nam', 'Nữ']
+                            .map((g) => DropdownMenuItem(value: g, child: Text(g, style: TextStyle(fontSize: 12.5))))
+                            .toList(),
+                        onChanged: (v) => setDialogState(() => selectedGender = v ?? 'Nam'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: bioCtrl,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Bio',
+                    hintText: 'Một câu ngắn gọn dưới 15 từ',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSaving ? null : () => Navigator.of(dialogCtx).pop(null),
+              child: const Text('Hủy', style: TextStyle(color: AppColors.textDim)),
+            ),
+            ElevatedButton.icon(
+              onPressed: isSaving
+                  ? null
+                  : () async {
+                      final newName = nameCtrl.text.trim();
+                      if (newName.isEmpty) {
+                        AppToast.warning(ctx, 'Tên nhân vật không được để trống');
+                        return;
+                      }
+                      setDialogState(() => isSaving = true);
+                      try {
+                        final updated = persona.copyWith(
+                          name: newName,
+                          age: int.tryParse(ageCtrl.text.trim()) ?? persona.age,
+                          gender: selectedGender,
+                          bio: bioCtrl.text.trim(),
+                        );
+                        final ok = await _personaService.updatePersona(updated);
+                        if (ctx.mounted) {
+                          if (ok) {
+                            Navigator.of(dialogCtx).pop(updated);
+                          } else {
+                            AppToast.error(ctx, 'Không thể lưu profile (entryKey đã tồn tại?)');
+                          }
+                        }
+                      } catch (e) {
+                        if (ctx.mounted) AppToast.error(ctx, 'Lỗi lưu: $e');
+                      } finally {
+                        if (ctx.mounted) setDialogState(() => isSaving = false);
+                      }
+                    },
+              icon: isSaving
+                  ? const SizedBox(
+                      width: 13, height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF070B14)),
+                    )
+                  : const Icon(Icons.check_rounded, size: 15),
+              label: Text(isSaving ? 'Đang lưu...' : 'Tạo profile',
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: const Color(0xFF070B14),
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null) {
+      // Lam moi danh sach profile tu DB (dung viec DB la nguon chan)
+      await _personaService.loadSavedPersonas(forceReload: true);
+    }
+    return result;
+  }
+
+  /// Tao profile moi dung chung IP cua card: mo dialog nhap lieu trong (persona ma)
+  /// voi entryKey moi tu sinh ('ip', 'ip##2', 'ip##3', ...) - khong de dong san khau bi loi du lieu.
+  Future<void> _handleAddSharedProfile(_ContactIpItem item) async {
+    setState(() {
+      _addingSharedProfileIps.add(item.ip);
+    });
+    try {
+      // Sinh entryKey trong cho profile moi (ca hai muc 'ip' da bi chiem thi 'ip##2'...)
+      final allPersonas = _personaService.allPersonas;
+      final usedKeys = allPersonas.keys.toSet();
+      String nextKey = item.ip;
+      int n = 2;
+      while (usedKeys.contains(nextKey)) {
+        nextKey = '${item.ip}##$n';
+        n++;
+      }
+
+      final newPersona = PersonaProfile(
+        ip: item.ip,
+        entryKey: nextKey,
+        name: 'Nhân vật mới',
+        age: 25,
+        gender: 'Nam',
+        bio: '',
+        avatarPrompt: '',
+      );
+
+      if (!mounted) return;
+      final saved = await _showPersonaDetailsForCreate(newPersona);
+      if (saved == null) return; // nguoi dung huy bo
+
+      if (mounted) {
+        setState(() {
+          _personas[saved.effectiveEntryKey] = saved;
+        });
+        AppToast.success(context, 'Đã thêm profile "${saved.name}" dùng chung IP ${item.ip}');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi thêm profile: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _addingSharedProfileIps.remove(item.ip);
+        });
+      }
+    }
+  }
+
+
+
+  /// Xoa 1 profile bat ky (nhan vat goc tren card hoac nhan vat phu)
+  /// Kich hoat tu nut Delete profile tren card.
+  Future<void> _handleDeleteMainPersona(PersonaProfile persona) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: AppColors.sidebarBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        title: const Text('Xóa profile?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        content: Text(
+          'Xóa profile "${persona.name}" (IP ${persona.ip})?\n\nHồ sơ nhân vật sẽ bị xóa vĩnh viễn khỏi Sân khấu này.',
+          style: const TextStyle(fontSize: 12.5, color: AppColors.textDim, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Hủy', style: TextStyle(color: AppColors.textDim)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Xóa', style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (!mounted) return;
+    setState(() {
+      _deletingEntryKeys.add(persona.effectiveEntryKey);
+    });
+    try {
+      final ok = await _personaService.deletePersona(persona.effectiveEntryKey);
+      if (mounted) {
+        if (ok) {
+          setState(() {
+            _personas.remove(persona.effectiveEntryKey);
+          });
+          AppToast.success(context, 'Đã xóa profile "${persona.name}"');
+        } else {
+          AppToast.error(context, 'Không tìm thấy profile để xóa');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi xóa profile: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _deletingEntryKeys.remove(persona.effectiveEntryKey);
+        });
+      }
+    }
+  }
+
+
   Widget _buildFallbackAvatarIcon(PersonaProfile? persona, bool isAnyRunning, bool isAlias, bool isMain) {
     return Center(
       child: Icon(
@@ -3738,11 +4171,17 @@ class _ContactIpItem {
   final bool isMain;
   final ServerModel server;
   final bool isCurrentServer;
+  /// Null = card chinh theo IP. Khac null (vi du 'ip##2') = card profile phu rieng biet.
+  final String? entryKey;
+  /// So thu tu profile phu (2, 3...) de hien badge. Null voi card chinh.
+  final int? profileIndex;
 
   _ContactIpItem({
     required this.ip,
     required this.isMain,
     required this.server,
     required this.isCurrentServer,
+    this.entryKey,
+    this.profileIndex,
   });
 }

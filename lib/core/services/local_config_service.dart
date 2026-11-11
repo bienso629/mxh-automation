@@ -51,6 +51,7 @@ class LocalConfigService {
     'ai_engine_type': 'proxy', // 'proxy' | 'cli'
     'active_cli_agent': 'antigravity-cli',
     'servers': [],
+    'removed_builtin_servers': [],
   };
 
   Future<void> switchUser(String userKey) async {
@@ -398,31 +399,69 @@ class LocalConfigService {
         serversList[0] = serversList[0].copyWith(isSelected: true);
       }
 
-      // Đảm bảo Server 100 (103.74.116.119) luôn xuất hiện trong danh sách máy chủ
+      // Server 100 chỉ tự bổ sung LẦN ĐẦU TIÊN: once user xóa nó đi thì
+      // phải tôn trọng quyết định đó, không "hồi sinh" ở mọi lần load sau.
       if (!serversList.any((s) => s.serverIp == '103.74.116.119')) {
-        serversList.add(ServerModel(
-          id: 'srv_server_100',
-          name: 'Server 100',
-          serverIp: '103.74.116.119',
-          sshPort: 7878,
-          sshUser: 'root',
-          sshPass: 'Tadu#123!@#',
-          aiModel: 'glm-5.3',
-          remoteWorkDir: '/root',
-          apiPort: 8000,
-          isSelected: false,
-          status: 'online',
-        ));
+        final removedBuiltins = (cfg['removed_builtin_servers'] is List)
+            ? (cfg['removed_builtin_servers'] as List).map((e) => e.toString()).toList()
+            : <String>[];
+        final server100Id = 'srv_server_100';
+        if (!removedBuiltins.contains(server100Id) && !removedBuiltins.contains('103.74.116.119')) {
+          serversList.add(ServerModel(
+            id: server100Id,
+            name: 'Server 100',
+            serverIp: '103.74.116.119',
+            sshPort: 7878,
+            sshUser: 'root',
+            sshPass: 'Tadu#123!@#',
+            aiModel: 'glm-5.3',
+            remoteWorkDir: '/root',
+            apiPort: 8000,
+            isSelected: false,
+            status: 'online',
+          ));
+        }
       }
+
+      // Đồng bộ ngược: danh sách server hiển thị (kể cả Server 100 vừa bổ sung)
+      // phải được ghi ngược vào cfg['servers'] và đánh dấu đúng is_selected.
+      // Nếu không, server vừa xóa sẽ "sống dậy" từ bản ghi cũ khi F5.
+      final existingServers = (cfg['servers'] is List)
+          ? (cfg['servers'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+          : <Map<String, dynamic>>[];
+      final syncedServers = <Map<String, dynamic>>[];
+      for (final srv in serversList) {
+        Map<String, dynamic>? match;
+        for (final m in existingServers) {
+          if (m['id']?.toString() == srv.id || m['server_ip']?.toString() == srv.serverIp) {
+            match = m;
+            break;
+          }
+        }
+        match ??= srv.toJson();
+        match['is_selected'] = srv.isSelected;
+        match['set_active'] = srv.isSelected;
+        syncedServers.add(match);
+      }
+      cfg['servers'] = syncedServers;
+      await saveConfig(cfg, userKey: _currentUserKey);
     }
 
     // 2. If serversList is still empty, populate from root config
     if (serversList.isEmpty && cfg['server_ip'] != null && cfg['server_ip'].toString().isNotEmpty) {
-      final defaultS = ServerModel.fromJson(cfg, isCurrent: true);
-      serversList.add(defaultS);
-      cfg['servers'] = [defaultS.toJson()];
-      cfg['active_server_id'] = defaultS.id;
-      await saveConfig(cfg, userKey: _currentUserKey);
+      final rootIp = cfg['server_ip'].toString();
+      final removedBuiltinsRoot = (cfg['removed_builtin_servers'] is List)
+          ? (cfg['removed_builtin_servers'] as List).map((e) => e.toString()).toList()
+          : <String>[];
+      // Root config la server built-in da bi xoa thi khong hoi sinh
+      if (!(rootIp == '103.74.116.119' &&
+          (removedBuiltinsRoot.contains('srv_server_100') || removedBuiltinsRoot.contains('103.74.116.119')))) {
+        final defaultS = ServerModel.fromJson(cfg, isCurrent: true);
+        serversList.add(defaultS);
+        cfg['servers'] = [defaultS.toJson()];
+        cfg['active_server_id'] = defaultS.id;
+        await saveConfig(cfg, userKey: _currentUserKey);
+      }
     }
 
     return serversList;
@@ -526,6 +565,17 @@ class LocalConfigService {
         item['id'] == serverIdOrIp || item['server_ip'] == serverIdOrIp);
 
     cfg['servers'] = servers;
+
+    // Nếu xóa server built-in (Server 100) thì ghi vào danh sách "đã bị người
+    // dùng xóa chủ đích" để getServers không tự động hồi sinh nó về sau.
+    if (serverIdOrIp == 'srv_server_100' || serverIdOrIp == '103.74.116.119') {
+      final removed = (cfg['removed_builtin_servers'] is List)
+          ? (cfg['removed_builtin_servers'] as List).map((e) => e.toString()).toList()
+          : <String>[];
+      if (!removed.contains('srv_server_100')) removed.add('srv_server_100');
+      if (!removed.contains('103.74.116.119')) removed.add('103.74.116.119');
+      cfg['removed_builtin_servers'] = removed;
+    }
 
     // If deleted server was active, switch active server to remaining server
     final activeId = cfg['active_server_id']?.toString();

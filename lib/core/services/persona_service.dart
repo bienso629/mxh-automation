@@ -133,7 +133,7 @@ class PersonaService {
 
   /// Lưu hoặc cập nhật một nhân vật đơn lẻ vào cả database local và file cache
   Future<bool> updatePersona(PersonaProfile persona) async {
-    _cachedPersonas[persona.ip] = persona;
+    _cachedPersonas[persona.effectiveEntryKey] = persona;
     bool dbOk = false;
     try {
       dbOk = await _dbService.upsertPersonaProfile(persona);
@@ -173,6 +173,135 @@ class PersonaService {
   }
 
   Map<String, PersonaProfile> get allPersonas => Map.unmodifiable(_cachedPersonas);
+
+  /// Xóa một nhân vật theo khóa định danh (entryKey) khỏi cache, DB và file JSON
+  /// Don cac entry khoi MOT file JSON du phong theo dieu kien (key hoac ip thuoc blacklist).
+  /// Tra ve so entry da bi loai bo khoi file. Neu cleanAllCopies = true se quet HET cac
+  /// file candidate (gom file legacy .tadu_ai_agent) - tranh tinh trang "hoi sinh" persona
+  /// khi buoc load merge du lieu tu file du phong con sot vao DB.
+  Future<int> _removeEntriesFromJsonFiles(
+    bool Function(String key, String? ip) shouldRemove, {
+    bool cleanAllCopies = false,
+  }) async {
+    final paths = cleanAllCopies ? _candidateStoragePaths : [_storageFilePath];
+    int removedCount = 0;
+    for (final path in paths) {
+      try {
+        final file = File(path);
+        if (!await file.exists()) continue;
+        final content = await file.readAsString();
+        if (content.trim().isEmpty) continue;
+        final decoded = jsonDecode(content);
+        if (decoded is! Map<String, dynamic>) continue;
+        final before = decoded.length;
+        decoded.removeWhere((key, val) {
+          String? pIp;
+          if (val is Map<String, dynamic>) {
+            pIp = val['ip']?.toString();
+          }
+          final hit = shouldRemove(key, pIp);
+          if (hit) removedCount++;
+          return hit;
+        });
+        if (decoded.length != before) {
+          await file.writeAsString(const JsonEncoder.withIndent('  ').convert(decoded));
+        }
+      } catch (_) {}
+    }
+    return removedCount;
+  }
+
+  Future<bool> deletePersona(String entryKey) async {
+    _cachedPersonas.remove(entryKey);
+    bool dbOk = false;
+    try {
+      dbOk = await _dbService.deletePersonaProfile(entryKey);
+    } catch (_) {}
+
+    // Quet SACH moi file JSON du phong (gom legacy .tadu_ai_agent) - neu chi don file
+    // chinh thi buoc load sau se merge entry tu file legacy roi hoi sinh persona.
+    // Dieu kien: dung key, hoac persona nao co ip trung entryKey (ban ghi bi luu duoi khoa khac).
+    try {
+      await _removeEntriesFromJsonFiles(
+        (key, ip) => key == entryKey || (ip != null && ip.isNotEmpty && ip == entryKey),
+        cleanAllCopies: true,
+      );
+    } catch (_) {}
+
+    return dbOk;
+  }
+
+  /// Xóa toàn bộ nhân vật thuộc một San khau (server) khỏi cache, DB và file JSON.
+  /// Nhan vat cung San khau gom: nhan vat co ip = serverIp/aliasIps va cac nhan vat
+  /// phu co entryKey dang 'ip##n' xuat phat tu cac IP do.
+  /// Tra ve so nhan vat da xoa (-1 neu co loi nghiem trong).
+  Future<int> deletePersonasByServerIps({
+    required String serverIp,
+    List<String> aliasIps = const [],
+  }) async {
+    final ips = <String>{serverIp, ...aliasIps.where((e) => e.trim().isNotEmpty)};
+    ips.removeWhere((e) => e.trim().isEmpty);
+    if (ips.isEmpty) return 0;
+
+    // Gom tat ca entryKey thuoc cac IP cua San khau: chinh ip + cac khoa phu 'ip##n'
+    final keysToRemove = <String>{};
+    _cachedPersonas.forEach((key, p) {
+      if (ips.contains(p.ip) || ips.contains(key) || ips.any((ip) => key.startsWith('$ip##'))) {
+        keysToRemove.add(key);
+      }
+    });
+
+    _cachedPersonas.removeWhere((key, _) => keysToRemove.contains(key));
+
+    int removed = keysToRemove.length;
+    int dbDeleted = 0;
+    try {
+      final dbResult = await _dbService.deletePersonaProfilesByServer(
+        serverIp: serverIp,
+        aliasIps: aliasIps,
+      );
+      if (dbResult >= 0) dbDeleted = dbResult;
+    } catch (_) {}
+
+    // Dong bo toan bo cac file JSON du phong (gom legacy): loai bo moi entry thuc San khau bi xoa
+    await _removeEntriesFromJsonFiles(
+      (key, pIp) =>
+          ips.contains(key) ||
+          ips.any((ip) => key.startsWith('$ip##')) ||
+          (pIp != null && ips.contains(pIp)),
+      cleanAllCopies: true,
+    );
+
+    if (removed == 0 && dbDeleted > 0) removed = dbDeleted;
+    return removed;
+  }
+
+  /// Sinh khóa định danh khả dụng kế tiếp cho 1 IP:
+  /// - IP chưa có nhân vật nào => trả về chính IP
+  /// - IP đã có => 'ip##2', 'ip##3', ... (bỏ qua khóa đã tồn tại, kể cả khóa hỏng)
+  String generateNextEntryKey(String ip) {
+    if (!_cachedPersonas.containsKey(ip)) return ip;
+    int n = 2;
+    while (true) {
+      final candidate = '$ip##$n';
+      if (!_cachedPersonas.containsKey(candidate)) return candidate;
+      n++;
+    }
+  }
+
+  /// Trả về danh sách nhân vật thuộc cùng 1 địa chỉ IP (bao gồm nhân vật gốc và các nhân vật phụ)
+  List<PersonaProfile> getPersonasForIp(String ip) {
+    int rank(String key) {
+      if (key == ip) return 0;
+      final m = RegExp(r'^' + RegExp.escape(ip) + r'##(\d+)$').firstMatch(key);
+      return m != null ? (int.tryParse(m.group(1)!) ?? 9999) : 9998;
+    }
+
+    return _cachedPersonas.values
+        .where((p) => p.ip == ip)
+        .toList()
+      ..sort((a, b) => rank(a.effectiveEntryKey).compareTo(rank(b.effectiveEntryKey)));
+  }
 
   /// Lấy macro tự động hóa của nhân vật theo IP và actionKey (ví dụ: 'facebook_like', 'tiktok_like')
   Map<String, dynamic>? getMacroForPersona(String ip, String actionKey) {
@@ -225,7 +354,7 @@ Mỗi nhân vật gồm:
 - name: Họ và tên của nhân vật trong kịch bản phim (ví dụ: Nguyễn Hoàng Nam, Trần Thu Hà, Lê Minh Triết, David Nguyen...)
 - age: Tuổi của nhân vật (từ 18 đến 55)
 - gender: Giới tính ("Nam" hoặc "Nữ")
-- bio: Tiểu sử ngắn gọn, bối cảnh tâm lý, tính cách và phong cách sống của nhân vật trong bộ phim (khoảng 1 - 2 câu súc tích)
+- bio: Một câu duy nhất CỰC NGẮN mô tả ngoại hình/tính cách nổi bật nhất của nhân vật (bắt buộc dưới 15 từ, ví dụ: "40 tuổi, trọc đầu, râu lấm tấm, kính tròn, áo ba lỗ"). TUYỆT ĐỐI không viết dài hơn 1 câu.
 - email: Hộp thư liên hệ đóng vai của nhân vật (ví dụ: nam.hoangnguyen@cinema-studio.vn, ha.tran@filmmakers.vn...)
 - agent_info: Vai trò của nhân vật trong kịch bản phim (ví dụ: "Nhân vật chính - Chàng kỹ sư công nghệ đam mê sáng tạo", "Nhiếp ảnh gia du lịch lãng mạn", "Nhà phê bình ẩm thực phố cổ", "Chuyên viên truyền thông nhiệt huyết"...)
 - avatar_prompt: Prompt tiếng Anh chi tiết chuyên dùng cho AI tạo ảnh chân dung điện ảnh (cinematic film still headshot) cho nhân vật này. Yêu cầu: Ảnh chụp cận cảnh chân dung điện ảnh (close-up cinematic headshot portrait), ánh sáng nghệ thuật điện ảnh (cinematic lighting, 35mm film grain, 8k resolution, authentic expression, photorealistic), không có watermark, không có logo hay chữ. Ví dụ: "Cinematic film still, close-up headshot portrait of a 28-year-old Vietnamese movie character, expressive eyes, warm natural skin texture, soft dramatic rim lighting, 35mm lens, depth of field, 8k, photorealistic, authentic film mood, no watermark, no text".
@@ -332,6 +461,7 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
             if (ip.isNotEmpty) {
               result[ip] = PersonaProfile(
                 ip: ip,
+                entryKey: ip,
                 name: item['name']?.toString() ?? 'Nhân vật AI',
                 age: (item['age'] is num) ? (item['age'] as num).toInt() : 25,
                 gender: item['gender']?.toString() ?? 'Nam',
@@ -358,6 +488,7 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
       if (!result.containsKey(ip)) {
         result[ip] = PersonaProfile(
           ip: ip,
+          entryKey: ip,
           name: 'Diễn viên $ip',
           age: 25,
           gender: 'Nam',
@@ -387,7 +518,8 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
       avatarDir.createSync(recursive: true);
     }
 
-    final sanitizedIp = persona.ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    // Dung entryKey (khong phai ip) de cac nhan vat cung 1 IP khong xoa avatar cua nhau
+    final sanitizedIp = persona.effectiveEntryKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final ext = p.extension(sourceFilePath).isNotEmpty ? p.extension(sourceFilePath).toLowerCase() : '.png';
     final localImagePath = p.join(avatarDir.path, 'avatar_${sanitizedIp}_$timestamp$ext');
@@ -431,7 +563,8 @@ BẮT BUỘC TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT (không bọc trong markd
       avatarDir.createSync(recursive: true);
     }
 
-    final sanitizedIp = persona.ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    // Dung entryKey (khong phai ip) de cac nhan vat cung 1 IP khong xoa avatar cua nhau
+    final sanitizedIp = persona.effectiveEntryKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final localImagePath = p.join(avatarDir.path, 'avatar_${sanitizedIp}_$timestamp.png');
 

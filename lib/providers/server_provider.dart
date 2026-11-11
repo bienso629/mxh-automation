@@ -46,7 +46,12 @@ class ServerProvider extends ChangeNotifier {
         ? server.serverIp.substring(0, server.serverIp.lastIndexOf('.'))
         : '';
 
+    // Dinh dang IP hop le: 4 nhom so cach nhau bang cham (0-255).
+    // Keys cua map persona la entryKey (ip hoac 'ip##n') - phai loai bo
+    // key dang 'ip##n' va moi key khong phai IPv4 de tranh tao card ma.
+    final ipv4Pattern = RegExp(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$');
     for (final personaIp in allPersonas.keys) {
+      if (!ipv4Pattern.hasMatch(personaIp)) continue; // bo qua entryKey 'ip##n'
       if (personaIp == server.serverIp) {
         ipSet.add(personaIp);
       } else if (serverPrefix.isNotEmpty && personaIp.startsWith('$serverPrefix.')) {
@@ -237,8 +242,35 @@ class ServerProvider extends ChangeNotifier {
 
   Future<bool> deleteServer(String serverIp) async {
     try {
+      // Xac dinh dung San khau bi xoa (caller co the truyen id hoac IP)
+      ServerModel? target;
+      for (final s in _servers) {
+        if (s.id == serverIp || s.serverIp == serverIp) {
+          target = s;
+          break;
+        }
+      }
+
       final ok = await _api.deleteServer(serverIp);
       if (ok) {
+        // Cascade: don dep nhan vat thuoc San khau vua xoa (ca nhan vat phu 'ip##n')
+        if (target != null) {
+          try {
+            await _persona.loadSavedPersonas();
+            final aliasIps = <String>{
+              ...(_serverIpsMap[target.id] ?? const <String>[]),
+              ...getIpsForServer(target),
+            }..remove(target.serverIp);
+            final removed = await _persona.deletePersonasByServerIps(
+              serverIp: target.serverIp,
+              aliasIps: aliasIps.toList(),
+            );
+            if (removed > 0) {
+              // Doc lai cache nhan vat sau khi da don dep
+              await _persona.loadSavedPersonas(forceReload: true);
+            }
+          } catch (_) {}
+        }
         await loadServers();
       }
       return ok;

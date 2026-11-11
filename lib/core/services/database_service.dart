@@ -82,7 +82,8 @@ class DatabaseService {
         ''');
         await db.execute('''
           CREATE TABLE IF NOT EXISTS persona_profiles (
-            ip TEXT PRIMARY KEY,
+            entry_key TEXT PRIMARY KEY,
+            ip TEXT NOT NULL,
             name TEXT NOT NULL,
             age INTEGER DEFAULT 25,
             gender TEXT DEFAULT 'Nam',
@@ -99,7 +100,8 @@ class DatabaseService {
     // Đảm bảo bảng persona_profiles tồn tại nếu DB đã tạo từ trước
     await _db!.execute('''
       CREATE TABLE IF NOT EXISTS persona_profiles (
-        ip TEXT PRIMARY KEY,
+        entry_key TEXT PRIMARY KEY,
+        ip TEXT NOT NULL,
         name TEXT NOT NULL,
         age INTEGER DEFAULT 25,
         gender TEXT DEFAULT 'Nam',
@@ -170,7 +172,60 @@ class DatabaseService {
       await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN automation_macros_json TEXT');
     } catch (_) {}
     try {
+      await _db!.execute("ALTER TABLE persona_profiles ADD COLUMN entry_key TEXT");
+    } catch (_) {}
+    try {
       await _db!.execute('ALTER TABLE chat_sessions ADD COLUMN cli_conv_id TEXT');
+    } catch (_) {}
+
+    // Migration da nhan vat: chuyen PRIMARY KEY tu ip sang entry_key
+    // de ho tro nhieu nhan vat cung 1 IP. Chay 1 lan khi phat hien bang cu.
+    try {
+      final tblRows = await _db!.rawQuery(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'persona_profiles'");
+      final tblSql = tblRows.isNotEmpty
+          ? (tblRows.first['sql']?.toString() ?? '')
+          : '';
+      if (tblSql.contains('ip TEXT PRIMARY KEY')) {
+        await _db!.execute('ALTER TABLE persona_profiles RENAME TO persona_profiles_old');
+        await _db!.execute('''
+          CREATE TABLE IF NOT EXISTS persona_profiles (
+            entry_key TEXT PRIMARY KEY,
+            ip TEXT NOT NULL,
+            name TEXT NOT NULL,
+            age INTEGER DEFAULT 25,
+            gender TEXT DEFAULT 'Nam',
+            bio TEXT,
+            avatar_prompt TEXT,
+            avatar_url TEXT,
+            external_device_address TEXT,
+            use_external_device INTEGER DEFAULT 0,
+            avd_name TEXT,
+            device_type TEXT DEFAULT 'mobile',
+            agent_info TEXT,
+            email TEXT,
+            phone_number TEXT,
+            auto_sync_phone_to_device INTEGER DEFAULT 0,
+            sms_order_id TEXT,
+            device_resolution TEXT,
+            automation_macros_json TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        ''');
+        await _db!.execute('''
+          INSERT OR REPLACE INTO persona_profiles
+            (entry_key, ip, name, age, gender, bio, avatar_prompt, avatar_url,
+             external_device_address, use_external_device, avd_name, device_type,
+             agent_info, email, phone_number, auto_sync_phone_to_device,
+             sms_order_id, device_resolution, automation_macros_json, updated_at)
+          SELECT COALESCE(entry_key, ip), ip, name, age, gender, bio, avatar_prompt, avatar_url,
+             external_device_address, use_external_device, avd_name, device_type,
+             agent_info, email, phone_number, auto_sync_phone_to_device,
+             sms_order_id, device_resolution, automation_macros_json, updated_at
+          FROM persona_profiles_old
+        ''');
+        await _db!.execute('DROP TABLE IF EXISTS persona_profiles_old');
+      }
     } catch (_) {}
   }
 
@@ -577,9 +632,13 @@ class DatabaseService {
       final result = <String, PersonaProfile>{};
       for (final r in rows) {
         final ip = r['ip']?.toString() ?? '';
+        // Khóa lưu trữ là entryKey (ip cho nhân vật gốc, 'ip##n' cho nhân vật phụ cùng IP)
+        final entryKey = r['entry_key']?.toString() ?? '';
+        final storageKey = entryKey.isNotEmpty ? entryKey : ip;
         if (ip.isNotEmpty) {
-          result[ip] = PersonaProfile(
+          result[storageKey] = PersonaProfile(
             ip: ip,
+            entryKey: storageKey,
             name: _enc.decryptValue(r['name']?.toString() ?? ''),
             age: (r['age'] is num) ? (r['age'] as num).toInt() : 25,
             gender: r['gender']?.toString() ?? 'Nam',
@@ -632,6 +691,7 @@ class DatabaseService {
       final db = await _getDb();
       final row = {
         'ip': profile.ip,
+        'entry_key': profile.effectiveEntryKey,
         'name': _enc.encryptValue(profile.name),
         'age': profile.age,
         'gender': profile.gender,
@@ -684,6 +744,7 @@ class DatabaseService {
           'persona_profiles',
           {
             'ip': p.ip,
+            'entry_key': p.effectiveEntryKey,
             'name': _enc.encryptValue(p.name),
             'age': p.age,
             'gender': p.gender,
@@ -720,6 +781,47 @@ class DatabaseService {
       }
       await batch.commit(noResult: true);
     } catch (_) {}
+  }
+
+  /// Xóa một nhân vật khỏi database theo khóa định danh (entryKey)
+  Future<bool> deletePersonaProfile(String entryKey) async {
+    try {
+      final db = await _getDb();
+      await db.delete(
+        'persona_profiles',
+        where: 'entry_key = ? OR (entry_key IS NULL AND ip = ?)',
+        whereArgs: [entryKey, entryKey],
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Xoa tat ca nhan vat thuoc mot San khau (server):
+  /// - Xoa theo dung IP chinh cua server
+  /// - Xoa theo cac IP alias lay tu storeSyncedIps (dai IP do nguoi dung them bang tay)
+  /// Tra ve so dong da xoa (-1 neu loi).
+  Future<int> deletePersonaProfilesByServer({
+    required String serverIp,
+    List<String> aliasIps = const [],
+  }) async {
+    final ips = <String>{serverIp, ...aliasIps.where((e) => e.trim().isNotEmpty)};
+    ips.removeWhere((e) => e.trim().isEmpty);
+    if (ips.isEmpty) return 0;
+    try {
+      final db = await _getDb();
+      final placeholders = List.filled(ips.length, '?').join(', ');
+      // Nhan vat cung San khau co the co entry_key dang 'ip##2' nen phai quet ca 2 cot
+      final count = await db.delete(
+        'persona_profiles',
+        where: 'ip IN ($placeholders) OR entry_key IN ($placeholders)',
+        whereArgs: [...ips, ...ips],
+      );
+      return count;
+    } catch (_) {
+      return -1;
+    }
   }
 
   // ==================== SCHEDULE TASKS (CALENDAR) ====================

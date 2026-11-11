@@ -163,9 +163,9 @@ class ScheduleProvider extends ChangeNotifier {
     try {
       final personasMap = await _personaService.loadSavedPersonas();
       final targetPersonas = task.personaIps
-          .map((ip) => personasMap[ip] ?? PersonaProfile(
-                ip: ip,
-                name: 'Nhân vật $ip',
+          .map((key) => personasMap[key] ?? personasMap[key.split('##').first] ?? PersonaProfile(
+                ip: key.split('##').first,
+                name: 'Nhân vật ${key.split('##').first}',
                 age: 25,
                 gender: 'Nam',
                 bio: '',
@@ -228,6 +228,8 @@ class ScheduleProvider extends ChangeNotifier {
               ip: p.ip,
               server: defaultServer,
               startUrl: task.targetUrl,
+              browserProfileId: p.browserProfileId,
+              entryKey: p.effectiveEntryKey,
             );
             successCount++;
           } catch (err) {
