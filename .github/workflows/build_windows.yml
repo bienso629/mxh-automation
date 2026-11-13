@@ -6,11 +6,15 @@ on:
     branches:
       - main
       - master
+    tags:
+      - 'v*'
 
 jobs:
   build-windows:
     name: Build Windows Setup Installer (.exe)
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -70,3 +74,29 @@ jobs:
           path: |
             dist-flutter/MXH-Tu-Dong-Setup-x64.exe
           retention-days: 14
+
+      - name: Publish Windows Installer to GitHub Releases
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exePath = "dist-flutter/MXH-Tu-Dong-Setup-x64.exe"
+          if (!(Test-Path $exePath)) {
+            Write-Host "Installer not found at $exePath"
+            exit 0
+          }
+          $refType = "${{ github.ref_type }}"
+          $refName = "${{ github.ref_name }}"
+          $runNum = "${{ github.run_number }}"
+          $shaShort = "${{ github.sha }}".Substring(0, 7)
+          $tag = if ($refType -eq "tag") { $refName } else { "v1.0.$runNum" }
+          $title = "Diễn viên MXH - Windows Setup ($tag - $shaShort)"
+          $notes = "Bản cài đặt Windows tự động đóng gói từ commit ${{ github.sha }} (nhánh/tag: $refName)."
+
+          gh release view $tag > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $exePath --clobber
+          } else {
+            gh release create $tag $exePath --title "$title" --notes "$notes" --latest
+          }
