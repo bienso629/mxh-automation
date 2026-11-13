@@ -91,6 +91,8 @@ class DatabaseService {
             avatar_prompt TEXT,
             external_device_address TEXT,
             use_external_device INTEGER DEFAULT 0,
+            browser_profile_id TEXT,
+            browser_profile_name TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           )
         ''');
@@ -109,6 +111,8 @@ class DatabaseService {
         avatar_prompt TEXT,
         external_device_address TEXT,
         use_external_device INTEGER DEFAULT 0,
+        browser_profile_id TEXT,
+        browser_profile_name TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     ''');
@@ -175,6 +179,12 @@ class DatabaseService {
       await _db!.execute("ALTER TABLE persona_profiles ADD COLUMN entry_key TEXT");
     } catch (_) {}
     try {
+      await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN browser_profile_id TEXT');
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN browser_profile_name TEXT');
+    } catch (_) {}
+    try {
       await _db!.execute('ALTER TABLE chat_sessions ADD COLUMN cli_conv_id TEXT');
     } catch (_) {}
 
@@ -209,6 +219,8 @@ class DatabaseService {
             sms_order_id TEXT,
             device_resolution TEXT,
             automation_macros_json TEXT,
+            browser_profile_id TEXT,
+            browser_profile_name TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           )
         ''');
@@ -217,11 +229,13 @@ class DatabaseService {
             (entry_key, ip, name, age, gender, bio, avatar_prompt, avatar_url,
              external_device_address, use_external_device, avd_name, device_type,
              agent_info, email, phone_number, auto_sync_phone_to_device,
-             sms_order_id, device_resolution, automation_macros_json, updated_at)
+             sms_order_id, device_resolution, automation_macros_json,
+             browser_profile_id, browser_profile_name, updated_at)
           SELECT COALESCE(entry_key, ip), ip, name, age, gender, bio, avatar_prompt, avatar_url,
              external_device_address, use_external_device, avd_name, device_type,
              agent_info, email, phone_number, auto_sync_phone_to_device,
-             sms_order_id, device_resolution, automation_macros_json, updated_at
+             sms_order_id, device_resolution, automation_macros_json,
+             browser_profile_id, browser_profile_name, updated_at
           FROM persona_profiles_old
         ''');
         await _db!.execute('DROP TABLE IF EXISTS persona_profiles_old');
@@ -676,6 +690,12 @@ class DatabaseService {
               }
               return null;
             }(),
+            browserProfileId: (r['browser_profile_id'] != null && r['browser_profile_id'].toString().trim().isNotEmpty)
+                ? r['browser_profile_id'].toString().trim()
+                : null,
+            browserProfileName: (r['browser_profile_name'] != null && r['browser_profile_name'].toString().trim().isNotEmpty)
+                ? r['browser_profile_name'].toString().trim()
+                : null,
           );
         }
       }
@@ -720,6 +740,12 @@ class DatabaseService {
         'device_resolution': profile.deviceResolution,
         'automation_macros_json': profile.automationMacros != null
             ? _enc.encryptValue(jsonEncode(profile.automationMacros))
+            : null,
+        'browser_profile_id': (profile.browserProfileId != null && profile.browserProfileId!.trim().isNotEmpty)
+            ? profile.browserProfileId!.trim()
+            : null,
+        'browser_profile_name': (profile.browserProfileName != null && profile.browserProfileName!.trim().isNotEmpty)
+            ? profile.browserProfileName!.trim()
             : null,
         'updated_at': DateTime.now().toIso8601String(),
       };
@@ -773,6 +799,12 @@ class DatabaseService {
             'device_resolution': p.deviceResolution,
             'automation_macros_json': p.automationMacros != null
                 ? _enc.encryptValue(jsonEncode(p.automationMacros))
+                : null,
+            'browser_profile_id': (p.browserProfileId != null && p.browserProfileId!.trim().isNotEmpty)
+                ? p.browserProfileId!.trim()
+                : null,
+            'browser_profile_name': (p.browserProfileName != null && p.browserProfileName!.trim().isNotEmpty)
+                ? p.browserProfileName!.trim()
                 : null,
             'updated_at': DateTime.now().toIso8601String(),
           },

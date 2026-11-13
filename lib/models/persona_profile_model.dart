@@ -136,6 +136,9 @@ class PersonaProfile {
       parsedMacros = Map<String, dynamic>.from(json['automation_macros'] as Map);
     }
 
+    final rawBrowserProfileId = json['browser_profile_id']?.toString().trim();
+    final rawBrowserProfileName = json['browser_profile_name']?.toString().trim();
+
     return PersonaProfile(
       ip: json['ip']?.toString() ?? '',
       entryKey: json['entry_key']?.toString(),
@@ -156,8 +159,8 @@ class PersonaProfile {
       smsOrderId: json['sms_order_id']?.toString(),
       deviceResolution: json['device_resolution']?.toString(),
       automationMacros: parsedMacros,
-      browserProfileId: json['browser_profile_id']?.toString(),
-      browserProfileName: json['browser_profile_name']?.toString(),
+      browserProfileId: (rawBrowserProfileId != null && rawBrowserProfileId.isNotEmpty) ? rawBrowserProfileId : null,
+      browserProfileName: (rawBrowserProfileName != null && rawBrowserProfileName.isNotEmpty) ? rawBrowserProfileName : null,
     );
   }
 }

@@ -43,7 +43,21 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   @override
   void initState() {
     super.initState();
+    HardwareKeyboard.instance.addHandler(_handleHardwareKey);
     _loadPersonas();
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
+    super.dispose();
+  }
+
+  bool _handleHardwareKey(KeyEvent event) {
+    if (mounted && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f5) {
+      _loadPersonas(forceReload: true);
+    }
+    return false;
   }
 
   Future<void> _loadPersonas({bool forceReload = false}) async {
@@ -562,31 +576,37 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
             if (currentOrderId != null && currentOrderId!.isNotEmpty && latestOtpCode == null) {
               startOtpPolling(currentOrderId!, setDialogState, dialogCtx);
             }
+            Future(() {
+              try {
+                final exe = _socks5Service.findBrowserExecutable();
+                if (exe == null || exe.isEmpty) return const <BrowserProfileInfo>[];
+                final rawList = BrowserProfileService().listSystemProfiles(exe);
+                final seen = <String>{};
+                return rawList.where((p) => p.id.isNotEmpty && seen.add(p.id)).toList();
+              } catch (_) {
+                return const <BrowserProfileInfo>[];
+              }
+            }).then((browserProfiles) {
+              if (dialogCtx.mounted) {
+                setDialogState(() {
+                  availableBrowserProfiles = browserProfiles;
+                  isLoadingBrowserProfiles = false;
+                });
+              }
+            });
             Future.wait([
               _socks5Service.getAvailableAvds(),
               _socks5Service.hasDeviceForPersona(ip: persona.ip, personaName: persona.name, avdName: persona.avdName),
-              () async {
-                try {
-                  final exe = _socks5Service.findBrowserExecutable();
-                  if (exe == null || exe.isEmpty) return const <BrowserProfileInfo>[];
-                  return BrowserProfileService().listSystemProfiles(exe);
-                } catch (_) {
-                  return const <BrowserProfileInfo>[];
-                }
-              }(),
             ]).then((results) {
               if (dialogCtx.mounted) {
                 final avds = results[0] as List<String>;
                 final hasDev = results[1] as bool;
-                final browserProfiles = results[2] as List<BrowserProfileInfo>;
                 final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
                 final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
                 setDialogState(() {
                   availableAvds = avds;
                   hasPersonaAvd = hasDev || avds.contains(expectedPersonaAvd) || avds.contains(legacyPersonaClone);
                   isLoadingAvds = false;
-                  availableBrowserProfiles = browserProfiles;
-                  isLoadingBrowserProfiles = false;
                   if (selectedAvd == null && avds.isNotEmpty) {
                     if (avds.contains(expectedPersonaAvd)) {
                       selectedAvd = expectedPersonaAvd;
@@ -1823,8 +1843,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     ),
                                     child: DropdownButtonHideUnderline(
                                       child: DropdownButton<String?>(
-                                        value: (selectedBrowserProfileId != null &&
-                                                availableBrowserProfiles.any((pr) => pr.id == selectedBrowserProfileId))
+                                        value: (selectedBrowserProfileId != null && selectedBrowserProfileId!.trim().isNotEmpty)
                                             ? selectedBrowserProfileId
                                             : null,
                                         hint: Text(
@@ -1844,6 +1863,20 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                             value: null,
                                             child: Text('Thư mục cô lập riêng (mặc định)', style: TextStyle(fontSize: 11.5, color: AppColors.textDim)),
                                           ),
+                                          if (selectedBrowserProfileId != null &&
+                                              selectedBrowserProfileId!.trim().isNotEmpty &&
+                                              !availableBrowserProfiles.any((pr) => pr.id == selectedBrowserProfileId))
+                                            DropdownMenuItem<String?>(
+                                              value: selectedBrowserProfileId,
+                                              child: Text(
+                                                (selectedBrowserProfileName != null && selectedBrowserProfileName!.trim().isNotEmpty)
+                                                    ? selectedBrowserProfileName!
+                                                    : selectedBrowserProfileId!,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(fontSize: 11.5),
+                                              ),
+                                            ),
                                           ...availableBrowserProfiles.map((pr) {
                                             return DropdownMenuItem<String?>(
                                               value: pr.id,
@@ -3483,6 +3516,27 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                         border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.5)),
                                       ),
                                       child: const Icon(Icons.email_rounded, size: 14, color: Color(0xFFA78BFA)),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (persona.browserProfileId != null && persona.browserProfileId!.trim().isNotEmpty) ...[
+                                const SizedBox(width: 4),
+                                Tooltip(
+                                  message: 'Profile trình duyệt hệ thống: ${persona.browserProfileName ?? persona.browserProfileId}',
+                                  child: InkWell(
+                                    onTap: () => _showPersonaDetails(persona),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Container(
+                                      width: 26,
+                                      height: 26,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: AppColors.accentCyan.withValues(alpha: 0.18),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: AppColors.accentCyan.withValues(alpha: 0.5)),
+                                      ),
+                                      child: const Icon(Icons.web_asset_rounded, size: 14, color: AppColors.accentCyan),
                                     ),
                                   ),
                                 ),
