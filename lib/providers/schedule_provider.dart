@@ -188,16 +188,17 @@ class ScheduleProvider extends ChangeNotifier {
         // - Giới hạn tối đa 2 devices chạy đồng thời (chống treo máy)
         // - Đảm bảo tác vụ auto trên từng device chạy XONG HOÀN TOÀN mới tắt máy
         // - Tắt xong mới mở thiết bị tiếp theo, đảm bảo xử lý hết tất cả devices (kể cả 100 devices)
-        final personaMap = {for (final p in targetPersonas) p.ip: p};
-        final ips = targetPersonas.map((p) => p.ip).toList();
+        final personaMap = {for (final p in targetPersonas) p.effectiveEntryKey: p};
+        final keys = targetPersonas.map((p) => p.effectiveEntryKey).toList();
 
         final queueResult = await _socks5Service.runDeviceTaskQueue(
-          ips: ips,
+          ips: keys,
           maxConcurrent: 2,
-          taskRunner: (ip) async {
-            final p = personaMap[ip]!;
+          taskRunner: (entryKey) async {
+            final p = personaMap[entryKey]!;
             await _socks5Service.launchPersonaDevice(
               ip: p.ip,
+              entryKey: p.effectiveEntryKey,
               server: defaultServer,
               deviceType: p.deviceType,
               avdName: p.avdName,

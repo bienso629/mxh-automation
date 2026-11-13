@@ -8,8 +8,12 @@ import 'package:dartssh2/dartssh2.dart';
 import '../../models/server_model.dart';
 import 'adb_manager_service.dart';
 import 'emulator_manager_service.dart';
+import 'ldplayer_adb_discovery.dart';
 import 'local_config_service.dart';
 import 'persona_service.dart';
+
+export 'ldplayer_adb_discovery.dart'
+    show VirtualDeviceKind, VirtualDeviceOption, LdPlayerAdbParser;
 
 /// Hàm chuẩn hóa chuỗi tiếng Việt có dấu thành không dấu an toàn cho tên hệ thống / tên tệp / tên AVD
 String removeVietnameseDiacritics(String str) {
@@ -71,8 +75,12 @@ class Socks5Session {
   ServerSocket? httpBridgeServer;
   int? emulatorPort;
   String? remoteDeviceAddress;
+  String? adbDeviceSerial;
+  int? ldPlayerIndex;
+  int? adbReversePort;
   DateTime createdAt = DateTime.now();
   DateTime? browserLaunchedAt;
+  DateTime? deviceLaunchedAt;
 
   Socks5Session({
     required this.localPort,
@@ -84,6 +92,9 @@ class Socks5Session {
     this.dynamicForward,
     this.localPortForwardServer,
     this.remoteDeviceAddress,
+    this.adbDeviceSerial,
+    this.ldPlayerIndex,
+    this.adbReversePort,
   });
 
   Future<void> stop() async {
@@ -138,39 +149,83 @@ class Socks5ProxyService extends ChangeNotifier {
     });
   }
 
+  static bool isLdPlayerId(String? avdId) => LdPlayerAdbParser.isLdPlayerId(avdId);
+  static bool isAdbConnectedId(String? avdId) => LdPlayerAdbParser.isAdbConnectedId(avdId);
+  static bool isExternalEmulatorId(String? avdId) => LdPlayerAdbParser.isExternalEmulatorId(avdId);
+
+  final Map<String, VirtualDeviceOption> _virtualDeviceCatalog = {};
+  bool _isCheckingAdbLiveness = false;
+  DateTime _lastAdbLivenessCheck = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Trả về tên hiển thị thân thiện của máy ảo / giả lập LDPlayer / thiết bị ADB
+  String getVirtualDeviceDisplayLabel(String avdId) {
+    final clean = avdId.trim();
+    final cached = _virtualDeviceCatalog[clean];
+    if (cached != null) return cached.displayLabel;
+    return LdPlayerAdbParser.fallbackDisplayLabelForId(clean);
+  }
+
   /// Kiểm tra các session đang ghi nhận, dọn dẹp khi tiến trình tắt và tự động phát hiện thiết bị đang chạy ngoài OS
   void _checkTerminatedBrowsers() {
     final now = DateTime.now();
     bool stateChanged = false;
 
+    // Kiểm tra định kỳ (mỗi 6 giây, bất đồng bộ không chặn UI) xem giả lập LDPlayer / ADB còn online không
+    final hasAdbAttached = _activeSessions.values.any(
+      (s) => s.adbDeviceSerial != null && s.adbDeviceSerial!.isNotEmpty,
+    );
+    if (hasAdbAttached &&
+        !_isCheckingAdbLiveness &&
+        now.difference(_lastAdbLivenessCheck) >= const Duration(seconds: 6)) {
+      _lastAdbLivenessCheck = now;
+      unawaited(_refreshAdbAttachedSessionsLiveness());
+    }
+
     // 1. Dọn dẹp session đã kết thúc
     if (_activeSessions.isNotEmpty) {
-      final deadIps = <String>[];
+      final deadKeys = <String>[];
       for (final entry in _activeSessions.entries) {
-        final ip = entry.key;
+        final sessionKey = entry.key;
         final session = entry.value;
 
-        // Thời gian ân hạn 10 giây sau khi tạo session hoặc vừa mở trình duyệt
+        // Thời gian ân hạn 10 giây sau khi tạo session hoặc vừa mở trình duyệt / thiết bị
         final timeSinceCreated = now.difference(session.createdAt);
         if (timeSinceCreated < const Duration(seconds: 10)) {
           continue;
         }
-        if (session.browserLaunchedAt != null) {
-          final timeSinceLaunch = now.difference(session.browserLaunchedAt!);
-          if (timeSinceLaunch < const Duration(seconds: 10)) {
+        if (session.browserLaunchedAt != null &&
+            now.difference(session.browserLaunchedAt!) < const Duration(seconds: 10)) {
+          continue;
+        }
+        if (session.deviceLaunchedAt != null &&
+            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 10)) {
+          continue;
+        }
+
+        // Nếu đây là session gốc giữ hầm SSH SOCKS5 cho IP và vẫn còn sub-profile (ip##n) đang dùng thì giữ nguyên
+        final isRootKey = sessionKey == session.ip;
+        if (isRootKey) {
+          final hasActiveChild = _activeSessions.keys.any(
+            (k) =>
+                k.startsWith('${session.ip}##') &&
+                (_isSystemProcessAliveForIp(session.ip, entryKey: k) ||
+                    _isDeviceProcessAliveForIp(session.ip, entryKey: k)),
+          );
+          if (hasActiveChild) {
             continue;
           }
         }
 
-        // Kiểm tra thực tế trên hệ thống xem profile IP này còn tiến trình trình duyệt hoặc device nào không
-        if (!_isSystemProcessAliveForIp(ip) && !_isDeviceProcessAliveForIp(ip)) {
-          deadIps.add(ip);
+        // Kiểm tra thực tế trên hệ thống xem profile này còn tiến trình trình duyệt hoặc device nào không
+        if (!_isSystemProcessAliveForIp(session.ip, entryKey: sessionKey) &&
+            !_isDeviceProcessAliveForIp(session.ip, entryKey: sessionKey)) {
+          deadKeys.add(sessionKey);
         }
       }
 
-      if (deadIps.isNotEmpty) {
-        for (final ip in deadIps) {
-          final session = _activeSessions.remove(ip);
+      if (deadKeys.isNotEmpty) {
+        for (final key in deadKeys) {
+          final session = _activeSessions.remove(key);
           session?.stop();
         }
         stateChanged = true;
@@ -188,12 +243,14 @@ class Socks5ProxyService extends ChangeNotifier {
               final content = f.readAsStringSync();
               final meta = json.decode(content);
               final ip = meta['ip']?.toString();
+              final entryKey = meta['entry_key']?.toString();
+              final trackKey = (entryKey != null && entryKey.isNotEmpty) ? entryKey : ip;
               final emuPid = meta['emulator_pid'];
               final cport = meta['console_port'];
-              if (ip != null && ip.isNotEmpty && emuPid != null && emuPid is int) {
+              if (ip != null && ip.isNotEmpty && trackKey != null && emuPid != null && emuPid is int) {
                 final isAlive = File('/proc/$emuPid/cmdline').existsSync() || Process.killPid(emuPid, ProcessSignal.sigcont);
                 if (isAlive) {
-                  if (!_activeSessions.containsKey(ip)) {
+                  if (!_activeSessions.containsKey(trackKey)) {
                     final newSession = Socks5Session(
                       localPort: 0,
                       ip: ip,
@@ -201,10 +258,10 @@ class Socks5ProxyService extends ChangeNotifier {
                     if (cport != null) {
                       newSession.emulatorPort = int.tryParse(cport.toString());
                     }
-                    _activeSessions[ip] = newSession;
+                    _activeSessions[trackKey] = newSession;
                     stateChanged = true;
                   } else {
-                    final exist = _activeSessions[ip]!;
+                    final exist = _activeSessions[trackKey]!;
                     if (exist.emulatorPort == null && cport != null) {
                       exist.emulatorPort = int.tryParse(cport.toString());
                       stateChanged = true;
@@ -225,6 +282,61 @@ class Socks5ProxyService extends ChangeNotifier {
 
     if (stateChanged) {
       notifyListeners();
+    }
+  }
+
+  /// Kiểm tra bất đồng bộ xem các giả lập LDPlayer / ADB đang gắn vào session có bị người dùng đóng thủ công ngoài màn hình hay không
+  Future<void> _refreshAdbAttachedSessionsLiveness() async {
+    if (_isCheckingAdbLiveness) return;
+    _isCheckingAdbLiveness = true;
+    try {
+      final adbBin = await _findAdbExecutable();
+      final res = await Process.run(adbBin, ['devices', '-l']).timeout(const Duration(seconds: 3));
+      if (res.exitCode != 0) return;
+
+      final onlineRecords = LdPlayerAdbParser.parseAdbDevicesLongOutput(res.stdout.toString());
+      final now = DateTime.now();
+      bool changed = false;
+
+      for (final entry in _activeSessions.entries.toList()) {
+        final sessionKey = entry.key;
+        final session = entry.value;
+        final boundSerial = session.adbDeviceSerial;
+        if (boundSerial == null || boundSerial.isEmpty) continue;
+
+        if (session.deviceLaunchedAt != null &&
+            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 15)) {
+          continue;
+        }
+
+        final stillOnline = onlineRecords.any((r) => r.matchesSerial(boundSerial));
+        if (!stillOnline) {
+          session.adbDeviceSerial = null;
+          session.ldPlayerIndex = null;
+          session.adbReversePort = null;
+          try {
+            await session.httpBridgeServer?.close();
+          } catch (_) {}
+          session.httpBridgeServer = null;
+
+          // Xóa file metadata tạm nếu có
+          try {
+            final sanitizedKey = sessionKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+            final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
+            final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedKey.json'));
+            if (metaFile.existsSync()) metaFile.deleteSync();
+          } catch (_) {}
+
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        notifyListeners();
+      }
+    } catch (_) {
+    } finally {
+      _isCheckingAdbLiveness = false;
     }
   }
 
@@ -302,14 +414,20 @@ class Socks5ProxyService extends ChangeNotifier {
     return false;
   }
 
-  /// Quét xem trên hệ thống OS có tiến trình mobile device nào đang chạy cho IP này không
-  bool _isDeviceProcessAliveForIp(String ip) {
+  /// Quét xem trên hệ thống OS có tiến trình mobile device nào đang chạy cho IP / nhân vật này không
+  bool _isDeviceProcessAliveForIp(String ip, {String? entryKey}) {
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
+        ? entryKey.trim()
+        : ip;
     try {
-      final session = _activeSessions[ip];
+      final session = _activeSessions[trackKey];
       if (session != null && session.deviceProcess != null) {
         return true;
       }
       if (session?.remoteDeviceAddress != null) {
+        return true;
+      }
+      if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
         return true;
       }
       if (Platform.isWindows) {
@@ -318,12 +436,13 @@ class Socks5ProxyService extends ChangeNotifier {
         }
       }
 
-      final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final isRootKey = trackKey == ip;
 
-      // 1. Kiểm tra file metadata device_<ip>.json do CLI mxh-tool hoặc app tạo ra
+      // 1. Kiểm tra file metadata device_<trackKey>.json do CLI mxh-tool hoặc app tạo ra
       try {
         final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
-        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedIp.json'));
+        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedTrackKey.json'));
         if (metaFile.existsSync()) {
           final content = metaFile.readAsStringSync();
           final meta = json.decode(content);
@@ -337,8 +456,8 @@ class Socks5ProxyService extends ChangeNotifier {
       } catch (_) {}
 
       final port = session?.emulatorPort;
-      final needleProfile = 'device_profiles/ip_$sanitizedIp';
-      final needlePersonaAvd = 'persona_$sanitizedIp';
+      final needleProfile = 'device_profiles/ip_$sanitizedTrackKey';
+      final needlePersonaAvd = 'persona_$sanitizedTrackKey';
       final needlePort = port != null ? '-port\x00$port' : null;
 
       if (Platform.isLinux) {
@@ -354,7 +473,7 @@ class Socks5ProxyService extends ChangeNotifier {
               if (cmdFile.existsSync()) {
                 final bytes = cmdFile.readAsBytesSync();
                 final cmd = String.fromCharCodes(bytes);
-                final matchesProfile = cmd.contains(needleProfile) || cmd.contains(needlePersonaAvd);
+                final matchesProfile = isRootKey && (cmd.contains(needleProfile) || cmd.contains(needlePersonaAvd));
                 final matchesPort = needlePort != null && cmd.contains(needlePort);
                 if ((matchesProfile || matchesPort) && !cmd.contains('python') && !cmd.contains('pgrep')) {
                   return true;
@@ -501,24 +620,33 @@ class Socks5ProxyService extends ChangeNotifier {
     return false;
   }
 
-  /// Kiểm tra xem mobile device gắn với IP này có đang chạy hay không
-  bool isDeviceRunningForIp(String ip) {
-    if (_closingDeviceIps.contains(ip)) {
+  /// Kiểm tra xem mobile device / giả lập gắn với IP hoặc nhân vật này có đang chạy hay không
+  bool isDeviceRunningForIp(String ip, {String? entryKey}) {
+    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
+        ? entryKey.trim()
+        : ip.trim();
+    if (_closingDeviceIps.contains(trackKey)) {
       return false;
     }
-    final session = _activeSessions[ip];
+    final session = _activeSessions[trackKey];
     if (session?.remoteDeviceAddress != null) {
       return true;
     }
-    return _isDeviceProcessAliveForIp(ip);
+    if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
+      return true;
+    }
+    return _isDeviceProcessAliveForIp(cleanIp, entryKey: trackKey);
   }
 
-  /// Danh sách tất cả IP hiện đang có thiết bị mobile / AVD đang chạy
+  /// Danh sách tất cả khóa phiên (IP hoặc entryKey) hiện đang có thiết bị mobile / giả lập đang chạy
   List<String> get runningDeviceIps {
     final res = <String>[];
-    for (final ip in _activeSessions.keys) {
-      if (isDeviceRunningForIp(ip)) {
-        res.add(ip);
+    for (final entry in _activeSessions.entries) {
+      final sessionKey = entry.key;
+      final session = entry.value;
+      if (isDeviceRunningForIp(session.ip, entryKey: sessionKey)) {
+        res.add(sessionKey);
       }
     }
     return res;
@@ -601,7 +729,8 @@ class Socks5ProxyService extends ChangeNotifier {
         } finally {
           // 3. TẮT THIẾT BỊ XONG XUÔI để giải phóng RAM & CPU cho thiết bị tiếp theo
           try {
-            await closeDeviceForIp(ip);
+            final rootIp = ip.contains('##') ? ip.split('##').first : ip;
+            await closeDeviceForIp(rootIp, entryKey: ip);
           } catch (_) {}
 
           completedCount++;
@@ -1585,9 +1714,72 @@ except Exception:
     return await EmulatorManagerService().ensureEmulatorInstalled(onProgress: onProgress);
   }
 
-  /// Tìm danh sách AVD khả dụng trên máy tính
-  /// Quét đồng thời từ CLI emulator và quét trực tiếp file .ini trong thư mục ~/.android/avd/
-  Future<List<String>> getAvailableAvds() async {
+  /// Tìm binary ADB sẵn có trên máy (ưu tiên Android Studio SDK -> ADB nhúng -> ADB đi kèm LDPlayer)
+  /// mà không tự ý kích hoạt tải xuống khi chỉ quét danh sách dropdown.
+  Future<String?> _findExistingAdbForDiscovery() async {
+    final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
+    final binName = Platform.isWindows ? 'adb.exe' : 'adb';
+    final candidates = <String>[];
+
+    for (final envKey in ['ANDROID_HOME', 'ANDROID_SDK_ROOT']) {
+      final sdkDir = Platform.environment[envKey];
+      if (sdkDir != null && sdkDir.trim().isNotEmpty) {
+        candidates.add(p.join(sdkDir.trim(), 'platform-tools', binName));
+      }
+    }
+
+    if (Platform.isWindows) {
+      final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
+      if (localAppData.isNotEmpty) {
+        candidates.add(p.join(localAppData, 'Android', 'Sdk', 'platform-tools', 'adb.exe'));
+      }
+      if (home.isNotEmpty) {
+        candidates.add(p.join(home, 'AppData', 'Local', 'Android', 'Sdk', 'platform-tools', 'adb.exe'));
+      }
+      candidates.addAll([
+        r'C:\Android\Sdk\platform-tools\adb.exe',
+        r'D:\Android\Sdk\platform-tools\adb.exe',
+        r'E:\Android\Sdk\platform-tools\adb.exe',
+      ]);
+    } else if (Platform.isMacOS) {
+      if (home.isNotEmpty) {
+        candidates.add(p.join(home, 'Library', 'Android', 'sdk', 'platform-tools', 'adb'));
+      }
+      candidates.addAll(['/opt/homebrew/bin/adb', '/usr/local/bin/adb']);
+    } else if (Platform.isLinux) {
+      if (home.isNotEmpty) {
+        candidates.add(p.join(home, 'Android', 'Sdk', 'platform-tools', 'adb'));
+        candidates.add(p.join(home, 'android-sdk', 'platform-tools', 'adb'));
+      }
+      candidates.addAll(['/opt/android-sdk/platform-tools/adb', '/usr/bin/adb', '/usr/local/bin/adb']);
+    }
+
+    for (final c in candidates) {
+      if (c.isNotEmpty && File(c).existsSync()) {
+        return c;
+      }
+    }
+
+    try {
+      final embedded = await AdbManagerService().getEmbeddedAdbPath();
+      if (File(embedded).existsSync()) {
+        return embedded;
+      }
+    } catch (_) {}
+
+    final ldInstall = await LdPlayerService().findInstallation();
+    if (ldInstall != null) {
+      final ldAdb = File(p.join(ldInstall.installDir, binName));
+      if (ldAdb.existsSync()) {
+        return ldAdb.path;
+      }
+    }
+
+    return null;
+  }
+
+  /// Quét danh sách máy ảo Android Studio AVD truyền thống (~/.android/avd + emulator -list-avds)
+  Future<List<String>> _getStandardAndroidAvds() async {
     final avds = <String>{};
 
     // 1. Quét trực tiếp thư mục ~/.android/avd/ (hoạt động 100% ngay cả khi chưa có Emulator CLI)
@@ -1598,7 +1790,6 @@ except Exception:
           final fileName = p.basename(entity.path);
           if (fileName.endsWith('.ini')) {
             final avdName = fileName.substring(0, fileName.length - 4);
-            // Kiểm tra thư mục .avd tương ứng có tồn tại không
             final dataDir = Directory(p.join(avdsDir.path, '$avdName.avd'));
             if (dataDir.existsSync()) {
               avds.add(avdName);
@@ -1612,7 +1803,8 @@ except Exception:
     final emulatorBin = _findAndroidEmulatorExecutable();
     if (emulatorBin != null) {
       try {
-        final res = await Process.run(emulatorBin, ['-list-avds']);
+        final res = await Process.run(emulatorBin, ['-list-avds'])
+            .timeout(const Duration(seconds: 3));
         if (res.exitCode == 0) {
           final lines = (res.stdout as String).split('\n');
           for (final l in lines) {
@@ -1625,9 +1817,118 @@ except Exception:
       } catch (_) {}
     }
 
-    final result = avds.toList();
-    result.sort();
+    final result = avds.toList()..sort();
     return result;
+  }
+
+  /// Quét toàn diện danh sách giả lập khả dụng trên hệ thống:
+  /// - Giả lập LDPlayer (quét từ ldconsole + vms/config/leidian*.config)
+  /// - Giả lập / thiết bị đang hiển thị trong danh sách thiết bị của Android Studio (`adb devices -l`)
+  /// - Máy ảo Android Studio AVD truyền thống (`~/.android/avd`)
+  Future<List<VirtualDeviceOption>> getAvailableVirtualDevices({bool forceRefresh = false}) async {
+    final results = await Future.wait<Object?>([
+      _getStandardAndroidAvds(),
+      LdPlayerService().discoverInstances(forceRefresh: forceRefresh),
+      _findExistingAdbForDiscovery(),
+    ]);
+
+    final standardAvds = results[0] as List<String>;
+    final ldInstances = results[1] as List<LdPlayerInstance>;
+    final adbBin = results[2] as String?;
+
+    List<AdbDeviceRecord> adbDevices = const [];
+    final adbPropsBySerial = <String, AdbGetpropSummary>{};
+
+    if (adbBin != null && adbBin.isNotEmpty) {
+      String decodeBytes(Object? raw) {
+        if (raw == null) return '';
+        if (raw is String) return raw;
+        if (raw is List<int>) return utf8.decode(raw, allowMalformed: true);
+        return raw.toString();
+      }
+
+      try {
+        var devRes = await Process.run(
+          adbBin,
+          ['devices', '-l'],
+          stdoutEncoding: null,
+          stderrEncoding: null,
+        ).timeout(const Duration(seconds: 3));
+        if (devRes.exitCode == 0) {
+          adbDevices = LdPlayerAdbParser.parseAdbDevicesLongOutput(decodeBytes(devRes.stdout));
+        }
+
+        // Nếu có giả lập LDPlayer đang bật mà chưa tự động attach vào ADB server của Android Studio,
+        // chủ động kết nối cổng TCP ADB tương ứng (127.0.0.1:5555 + index * 2) rồi đọc lại danh sách
+        final missingRunningLd = ldInstances.where((ld) {
+          if (!ld.isRunning) return false;
+          final emuS = LdPlayerAdbParser.ldPlayerEmulatorSerial(ld.index);
+          final tcpS = LdPlayerAdbParser.ldPlayerTcpSerial(ld.index);
+          return !adbDevices.any((d) => d.matchesSerial(emuS) || d.matchesSerial(tcpS));
+        }).toList();
+
+        if (missingRunningLd.isNotEmpty) {
+          await Future.wait(missingRunningLd.map((ld) async {
+            final tcpSerial = LdPlayerAdbParser.ldPlayerTcpSerial(ld.index);
+            try {
+              await Process.run(
+                adbBin,
+                ['connect', tcpSerial],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(milliseconds: 1500));
+            } catch (_) {}
+          }));
+
+          devRes = await Process.run(
+            adbBin,
+            ['devices', '-l'],
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          ).timeout(const Duration(seconds: 3));
+          if (devRes.exitCode == 0) {
+            adbDevices = LdPlayerAdbParser.parseAdbDevicesLongOutput(decodeBytes(devRes.stdout));
+          }
+        }
+
+        // Đọc getprop song song trên các thiết bị ADB online để phân biệt chính xác AVD chuẩn vs LDPlayer / ADB
+        if (adbDevices.isNotEmpty) {
+          await Future.wait(adbDevices.map((dev) async {
+            try {
+              final propRes = await Process.run(
+                adbBin,
+                ['-s', dev.serial, 'shell', 'getprop'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+              if (propRes.exitCode == 0) {
+                adbPropsBySerial[dev.serial] =
+                    LdPlayerAdbParser.parseAndroidGetpropOutput(decodeBytes(propRes.stdout));
+              }
+            } catch (_) {}
+          }));
+        }
+      } catch (_) {}
+    }
+
+    final merged = LdPlayerAdbParser.mergeVirtualDeviceCatalog(
+      standardAvds: standardAvds,
+      ldPlayerInstances: ldInstances,
+      adbDevices: adbDevices,
+      adbPropsBySerial: adbPropsBySerial,
+    );
+
+    _virtualDeviceCatalog
+      ..clear()
+      ..addEntries(merged.map((d) => MapEntry(d.id, d)));
+
+    return merged;
+  }
+
+  /// Tìm danh sách định danh máy ảo khả dụng (bao gồm LDPlayer, thiết bị ADB trong Android Studio và AVD chuẩn)
+  Future<List<String>> getAvailableAvds({bool forceRefresh = false}) async {
+    final devices = await getAvailableVirtualDevices(forceRefresh: forceRefresh);
+    return devices.map((d) => d.id).toList();
   }
 
   /// Tìm binary qemu-img đi kèm SDK Emulator
@@ -1659,7 +1960,7 @@ except Exception:
     return null;
   }
 
-  /// Kiểm tra xem nhân vật theo IP đã có thiết bị (AVD clone hoặc địa chỉ ngoại vi) hay chưa
+  /// Kiểm tra xem nhân vật theo IP đã có thiết bị (LDPlayer, ADB, AVD clone hoặc địa chỉ ngoại vi) hay chưa
   Future<bool> hasDeviceForPersona({
     required String ip,
     String? personaName,
@@ -1672,7 +1973,12 @@ except Exception:
       return externalDeviceAddress != null && externalDeviceAddress.trim().isNotEmpty;
     }
 
-    // 2. Kiểm tra AVD trên máy local:
+    // 2. Nếu nhân vật đã gắn giả lập LDPlayer hoặc thiết bị trong danh sách ADB của Android Studio
+    if (avdName != null && LdPlayerAdbParser.isExternalEmulatorId(avdName)) {
+      return true;
+    }
+
+    // 3. Kiểm tra AVD trên máy local:
     final avdsDir = getAndroidAvdDirectory();
     if (!avdsDir.existsSync()) return false;
 
@@ -2485,10 +2791,254 @@ for root, _, files in os.walk(target_dir):
     return cloneAvdName;
   }
 
-  /// Khởi chạy thiết bị Android (Emulator chuẩn Android Studio hoặc Kết nối Ngoại vi ADB WiFi)
+  /// Khởi chạy hoặc gắn kết giả lập LDPlayer / thiết bị trong danh sách ADB của Android Studio
+  /// Định tuyến lưu lượng qua cầu nối SOCKS5 -> HTTP Proxy của nhân vật (ưu tiên `adb reverse` không phụ thuộc tường lửa)
+  Future<bool> _launchOrAttachExternalEmulator({
+    required Socks5Session session,
+    required String ip,
+    required String trackKey,
+    required String avdId,
+    String? startUrl,
+    String? phoneNumber,
+    bool autoSyncPhone = false,
+  }) async {
+    final adbBin = await _findAdbExecutable();
+    String? resolvedSerial;
+    int? ldIndex;
+
+    Future<String?> findOnlineLdPlayerSerial(int idx) async {
+      final emuSerial = LdPlayerAdbParser.ldPlayerEmulatorSerial(idx);
+      final tcpSerial = LdPlayerAdbParser.ldPlayerTcpSerial(idx);
+      try {
+        final devRes = await Process.run(adbBin, ['devices', '-l'])
+            .timeout(const Duration(seconds: 3));
+        if (devRes.exitCode == 0) {
+          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(devRes.stdout.toString());
+          for (final rec in records) {
+            if (rec.matchesSerial(emuSerial) || rec.matchesSerial(tcpSerial)) {
+              return rec.serial;
+            }
+          }
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    if (LdPlayerAdbParser.isLdPlayerId(avdId)) {
+      ldIndex = LdPlayerAdbParser.parseLdPlayerIndex(avdId);
+      if (ldIndex == null) {
+        throw Exception('Định danh giả lập LDPlayer không hợp lệ: $avdId');
+      }
+
+      // 1. Kiểm tra xem giả lập LDPlayer này đã chạy sẵn trong Android Studio ADB chưa
+      resolvedSerial = await findOnlineLdPlayerSerial(ldIndex);
+
+      // Nếu chưa thấy trên ADB, thử chủ động connect cổng TCP ADB của LDPlayer trước
+      if (resolvedSerial == null) {
+        try {
+          await Process.run(adbBin, ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(ldIndex)])
+              .timeout(const Duration(seconds: 2));
+        } catch (_) {}
+        resolvedSerial = await findOnlineLdPlayerSerial(ldIndex);
+      }
+
+      // 2. Nếu vẫn chưa chạy, gọi ldconsole.exe launch --index <ldIndex> để bật LDPlayer
+      if (resolvedSerial == null) {
+        final launched = await LdPlayerService().launchVm(ldIndex);
+        if (!launched) {
+          throw Exception(
+            'Giả lập LDPlayer #$ldIndex chưa bật và không tìm thấy công cụ ldconsole.exe để khởi chạy tự động. '
+            'Vui lòng mở giả lập LDPlayer #$ldIndex trước rồi bấm Mở device.',
+          );
+        }
+
+        // Chờ LDPlayer khởi động xong và xuất hiện trong ADB (tối đa 70 giây)
+        for (int attempt = 0; attempt < 35; attempt++) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (attempt % 3 == 1) {
+            try {
+              await Process.run(adbBin, ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(ldIndex)])
+                  .timeout(const Duration(milliseconds: 1500));
+            } catch (_) {}
+          }
+          final candidate = await findOnlineLdPlayerSerial(ldIndex);
+          if (candidate != null) {
+            try {
+              final bootRes = await Process.run(
+                adbBin,
+                ['-s', candidate, 'shell', 'getprop', 'sys.boot_completed'],
+              ).timeout(const Duration(seconds: 3));
+              if (bootRes.stdout.toString().trim() == '1') {
+                resolvedSerial = candidate;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (resolvedSerial == null) {
+        throw Exception(
+          'Không nhận được kết nối ADB từ LDPlayer #$ldIndex sau khi khởi động. '
+          'Vui lòng kiểm tra mục Cài đặt khác -> Kết nối ADB -> Mở kết nối cục bộ trong LDPlayer.',
+        );
+      }
+    } else if (LdPlayerAdbParser.isAdbConnectedId(avdId)) {
+      final rawSerial = LdPlayerAdbParser.parseAdbSerial(avdId);
+      if (rawSerial == null || rawSerial.isEmpty) {
+        throw Exception('Địa chỉ ADB của giả lập không hợp lệ: $avdId');
+      }
+
+      if (rawSerial.contains(':')) {
+        try {
+          await Process.run(adbBin, ['connect', rawSerial])
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {}
+      }
+
+      bool isOnline = false;
+      try {
+        final devRes = await Process.run(adbBin, ['devices', '-l'])
+            .timeout(const Duration(seconds: 3));
+        if (devRes.exitCode == 0) {
+          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(devRes.stdout.toString());
+          for (final rec in records) {
+            if (rec.matchesSerial(rawSerial)) {
+              resolvedSerial = rec.serial;
+              isOnline = true;
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+
+      if (!isOnline || resolvedSerial == null) {
+        throw Exception(
+          'Thiết bị / giả lập $rawSerial hiện không trực tuyến trong ADB của Android Studio. '
+          'Vui lòng bật giả lập LDPlayer trước rồi thử lại.',
+        );
+      }
+
+      // Chờ hệ điều hành Android bên trong giả lập hoàn tất boot nếu vừa mở
+      for (int i = 0; i < 10; i++) {
+        try {
+          final bootRes = await Process.run(
+            adbBin,
+            ['-s', resolvedSerial, 'shell', 'getprop', 'sys.boot_completed'],
+          ).timeout(const Duration(seconds: 2));
+          if (bootRes.stdout.toString().trim() == '1') break;
+        } catch (_) {}
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    } else {
+      throw Exception('Loại thiết bị không được hỗ trợ: $avdId');
+    }
+
+    final serial = resolvedSerial;
+
+    // 3. Định tuyến proxy SOCKS5 -> HTTP Bridge vào giả lập LDPlayer / ADB (hoặc xóa proxy nếu dùng IP 127.0.0.1)
+    try {
+      session.httpBridgeProcess?.kill();
+      await session.httpBridgeServer?.close();
+      session.httpBridgeServer = null;
+    } catch (_) {}
+
+    if (session.localPort > 0) {
+      try {
+        final tempSocket = await ServerSocket.bind('0.0.0.0', 0);
+        final hPort = tempSocket.port;
+        await tempSocket.close();
+
+        final bridgeServer = await startSocks2HttpBridge(
+          httpPort: hPort,
+          socksPort: session.localPort,
+          listenHost: '0.0.0.0',
+        );
+        session.httpBridgeServer = bridgeServer;
+
+        // Ưu tiên adb reverse (đi thẳng qua kênh ADB về 127.0.0.1 của host, tương thích cả NAT lẫn Bridged của LDPlayer)
+        bool reverseOk = false;
+        try {
+          final revRes = await Process.run(
+            adbBin,
+            ['-s', serial, 'reverse', 'tcp:$hPort', 'tcp:$hPort'],
+          ).timeout(const Duration(seconds: 3));
+          reverseOk = revRes.exitCode == 0;
+        } catch (_) {}
+
+        if (reverseOk) {
+          session.adbReversePort = hPort;
+          await setAdbGlobalProxy(serial, '127.0.0.1', hPort);
+        } else {
+          final hostLanIp = await _getLocalHostIp();
+          await setAdbGlobalProxy(serial, hostLanIp, hPort);
+        }
+      } catch (e) {
+        debugPrint('[LDPlayer/ADB] Cảnh báo cấu hình proxy cho $serial: $e');
+      }
+    } else {
+      try {
+        await clearAdbGlobalProxy(serial);
+      } catch (_) {}
+    }
+
+    session.adbDeviceSerial = serial;
+    session.ldPlayerIndex = ldIndex;
+    session.deviceLaunchedAt = DateTime.now();
+
+    // Lưu metadata để công cụ CLI tự động hóa (mxh-tool) cũng nhận diện đúng serial của nhân vật
+    try {
+      final homeDir = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
+      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
+      if (!tmpDir.existsSync()) tmpDir.createSync(recursive: true);
+      final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final metaFile = File(p.join(tmpDir.path, 'device_$sanitizedTrackKey.json'));
+      metaFile.writeAsStringSync(jsonEncode({
+        'ip': ip,
+        'entry_key': trackKey,
+        'target_avd': avdId,
+        'adb_serial': serial,
+        'ldplayer_index': ldIndex,
+      }));
+    } catch (_) {}
+
+    // Đồng bộ số điện thoại nếu được bật
+    if (autoSyncPhone && phoneNumber != null && phoneNumber.trim().isNotEmpty) {
+      try {
+        await syncPhoneNumberToDevice(serial, phoneNumber.trim());
+      } catch (_) {}
+    }
+
+    // Đánh thức màn hình và mở URL đích nếu có
+    try {
+      await Process.run(adbBin, ['-s', serial, 'shell', 'input', 'keyevent', '224'])
+          .timeout(const Duration(seconds: 2));
+      if (startUrl != null && startUrl.trim().isNotEmpty) {
+        await Process.run(adbBin, [
+          '-s',
+          serial,
+          'shell',
+          'am',
+          'start',
+          '-a',
+          'android.intent.action.VIEW',
+          '-d',
+          startUrl.trim(),
+        ]).timeout(const Duration(seconds: 3));
+      }
+    } catch (_) {}
+
+    notifyListeners();
+    return true;
+  }
+
+  /// Khởi chạy thiết bị Android (Giả lập LDPlayer, Thiết bị ADB Android Studio, AVD chuẩn hoặc Ngoại vi WiFi)
   /// Tự động kết nối proxy SOCKS5 nếu có server, hoặc khởi chạy thiết bị độc lập nếu server null
   Future<bool> launchPersonaDevice({
     required String ip,
+    String? entryKey,
     ServerModel? server,
     String? avdName,
     String? startUrl,
@@ -2497,44 +3047,62 @@ for root, _, files in os.walk(target_dir):
     String? phoneNumber,
     bool autoSyncPhone = false,
   }) async {
+    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
+        ? entryKey.trim()
+        : ip.trim();
+
     // Nếu thiết bị của nhân vật này đang chạy sẵn rồi thì không khởi chạy trùng lặp
-    if (isDeviceRunningForIp(ip)) {
-      debugPrint('[Device] Thiết bị cho IP $ip đang hoạt động sẵn, bỏ qua không mở thêm phiên trùng lặp.');
+    if (isDeviceRunningForIp(cleanIp, entryKey: trackKey)) {
+      debugPrint('[Device] Thiết bị cho $trackKey đang hoạt động sẵn, bỏ qua không mở thêm phiên trùng lặp.');
       return true;
     }
 
-    Socks5Session? session;
+    final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+    final effectiveAvdName = (avdName != null && avdName.trim().isNotEmpty)
+        ? avdName.trim()
+        : personaProfile?.avdName?.trim();
+    final effectiveRemoteAddress = (remoteDeviceAddress != null && remoteDeviceAddress.trim().isNotEmpty)
+        ? remoteDeviceAddress.trim()
+        : ((personaProfile?.useExternalDevice ?? false)
+            ? personaProfile?.externalDeviceAddress?.trim()
+            : null);
+
+    Socks5Session? rootSession;
     int? httpProxyPort;
 
-    final isLocalDirect = ip == '127.0.0.1' || ip == 'localhost';
+    final isLocalDirect = cleanIp == '127.0.0.1' || cleanIp == 'localhost';
     if (server != null && !isLocalDirect) {
       try {
-        session = await startSocks5Server(server: server, ip: ip);
+        rootSession = await startSocks5Server(server: server, ip: cleanIp);
       } catch (_) {
         // Fallback: nếu lỗi SSH thì tiếp tục chạy thiết bị cục bộ
       }
     }
 
-    if (session == null) {
-      session = _activeSessions[ip] ?? Socks5Session(
-        localPort: 0,
-        server: server,
-        ip: ip,
-        sshProcess: null,
-        askpassFile: null,
-      );
-      _activeSessions[ip] = session;
+    Socks5Session session;
+    if (trackKey == cleanIp && rootSession != null) {
+      session = rootSession;
+    } else {
+      session = _activeSessions[trackKey] ??
+          Socks5Session(
+            localPort: rootSession?.localPort ?? 0,
+            server: server,
+            ip: cleanIp,
+          );
+      _activeSessions[trackKey] = session;
     }
 
     // Đảm bảo không vượt quá số lượng thiết bị tối đa được phép mở đồng thời theo cấu hình
-    await ensureDeviceCapacity(exemptIps: [ip]);
+    await ensureDeviceCapacity(exemptIps: [trackKey, cleanIp]);
 
     // TRƯỜNG HỢP 1: Kết nối thiết bị Android ngoại vi qua WiFi/TCP-IP và ép HTTP Proxy vào máy (nếu có socks5)
-    if (remoteDeviceAddress != null && remoteDeviceAddress.trim().isNotEmpty) {
-      final addr = remoteDeviceAddress.trim();
+    if (effectiveRemoteAddress != null && effectiveRemoteAddress.isNotEmpty) {
+      final addr = effectiveRemoteAddress;
       try {
         await connectRemoteDevice(addr);
         session.remoteDeviceAddress = addr;
+        session.deviceLaunchedAt = DateTime.now();
 
         // Tự động đồng bộ số điện thoại vào User Profile của thiết bị ngoại vi nếu được bật switch
         if (autoSyncPhone && phoneNumber != null && phoneNumber.trim().isNotEmpty) {
@@ -2578,11 +3146,24 @@ for root, _, files in os.walk(target_dir):
       }
     }
 
-    // TRƯỜNG HỢP 2: Khởi chạy Android Emulator chuẩn Android Studio trên máy Local
+    // TRƯỜNG HỢP 2: Giả lập LDPlayer hoặc giả lập đang kết nối trong danh sách ADB của Android Studio
+    if (effectiveAvdName != null && LdPlayerAdbParser.isExternalEmulatorId(effectiveAvdName)) {
+      return await _launchOrAttachExternalEmulator(
+        session: session,
+        ip: cleanIp,
+        trackKey: trackKey,
+        avdId: effectiveAvdName,
+        startUrl: startUrl,
+        phoneNumber: phoneNumber ?? personaProfile?.phoneNumber,
+        autoSyncPhone: autoSyncPhone || (personaProfile?.autoSyncPhoneToDevice ?? false),
+      );
+    }
+
+    // TRƯỜNG HỢP 3: Khởi chạy Android Emulator chuẩn Android Studio trên máy Local
     // 1. Kiểm tra hoặc tự động tải Android Emulator binary từ Google repo nếu máy chưa có
     final emulatorBin = await resolveAndroidEmulatorExecutable();
     if (emulatorBin == null) {
-      throw Exception('Không tìm thấy Android Emulator trên hệ thống và không thể tải tự động. Vui lòng chuyển sang tab Thiết bị ngoại vi (WiFi ADB) hoặc kiểm tra kết nối mạng.');
+      throw Exception('Không tìm thấy Android Emulator trên hệ thống và không thể tải tự động. Vui lòng chọn giả lập LDPlayer / ADB hoặc Thiết bị ngoại vi.');
     }
 
     // 2. Xác định tên AVD để khởi chạy
@@ -2592,8 +3173,8 @@ for root, _, files in os.walk(target_dir):
 
     String actualAvd = '';
     // Kiểm tra xem persona đã có AVD riêng (từ Import hoặc Clone trước đó) hay chưa
-    if (avdName != null && avdName.trim().isNotEmpty) {
-      final requestedAvd = avdName.trim();
+    if (effectiveAvdName != null && effectiveAvdName.isNotEmpty) {
+      final requestedAvd = effectiveAvdName;
       final requestedDir = Directory(p.join(avdsDir.path, '$requestedAvd.avd'));
       if (requestedDir.existsSync()) {
         actualAvd = requestedAvd;
@@ -2601,7 +3182,6 @@ for root, _, files in os.walk(target_dir):
     }
 
     if (actualAvd.isEmpty) {
-      final personaProfile = PersonaService().getPersona(ip);
       final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
       final expectedDir = Directory(p.join(avdsDir.path, '$expectedNameAvd.avd'));
       if (expectedDir.existsSync()) {
@@ -2823,11 +3403,12 @@ for root, _, files in os.walk(target_dir):
     }
   }
 
-  /// Khởi chạy thiết bị Android (Emulator chuẩn Android Studio hoặc Kết nối Ngoại vi ADB WiFi)
+  /// Khởi chạy thiết bị Android (LDPlayer, ADB Android Studio, AVD chuẩn hoặc Ngoại vi WiFi)
   /// Định tuyến toàn bộ lưu lượng mạng máy ảo qua proxy SOCKS5 của chính IP đó
   Future<bool> launchDeviceWithSocks5({
     required ServerModel server,
     required String ip,
+    String? entryKey,
     String? avdName,
     String? startUrl,
     String? remoteDeviceAddress,
@@ -2838,6 +3419,7 @@ for root, _, files in os.walk(target_dir):
     return launchPersonaDevice(
       server: server,
       ip: ip,
+      entryKey: entryKey,
       avdName: avdName,
       startUrl: startUrl,
       remoteDeviceAddress: remoteDeviceAddress,
@@ -2960,7 +3542,14 @@ for root, _, files in os.walk(target_dir):
 
   /// Đóng trình duyệt và dừng toàn bộ kết nối SOCKS5 của IP
   Future<void> stopSession(String ip) async {
-    // Đóng device an toàn trước nếu đang chạy để kịp flush dữ liệu ứng dụng
+    // Đóng device của các nhân vật phụ dùng chung IP trước nếu có
+    final childKeys = _activeSessions.keys.where((k) => k.startsWith('$ip##')).toList();
+    for (final ck in childKeys) {
+      if (isDeviceRunningForIp(ip, entryKey: ck)) {
+        await closeDeviceForIp(ip, entryKey: ck);
+      }
+    }
+    // Đóng device của IP gốc an toàn trước nếu đang chạy để kịp flush dữ liệu ứng dụng
     if (isDeviceRunningForIp(ip)) {
       await closeDeviceForIp(ip);
     }
@@ -2987,7 +3576,8 @@ for root, _, files in os.walk(target_dir):
           .where((k) => k.startsWith('$ip##'))
           .toList();
       for (final k in staleKeys) {
-        _activeSessions.remove(k);
+        final child = _activeSessions.remove(k);
+        await child?.stop();
       }
     } catch (_) {}
     notifyListeners();
@@ -3041,8 +3631,17 @@ for root, _, files in os.walk(target_dir):
       }
     } catch (_) {}
 
-    // Nếu device cũng không còn chạy thì giải phóng hoàn toàn session SOCKS5
-    if (!_isDeviceProcessAliveForIp(ip) && !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
+    // Nếu device cũng không còn chạy (và nếu là root IP thì không còn sub-profile nào chạy) thì giải phóng hoàn toàn session SOCKS5
+    final hasActiveChild = trackKey == ip &&
+        _activeSessions.keys.any(
+          (k) =>
+              k.startsWith('$ip##') &&
+              (_isSystemProcessAliveForIp(ip, entryKey: k) ||
+                  _isDeviceProcessAliveForIp(ip, entryKey: k)),
+        );
+    if (!hasActiveChild &&
+        !_isDeviceProcessAliveForIp(ip, entryKey: trackKey) &&
+        !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
       final s = _activeSessions.remove(trackKey);
       if (s != null) {
         await s.stop();
@@ -3052,15 +3651,22 @@ for root, _, files in os.walk(target_dir):
     notifyListeners();
   }
 
-  /// Đóng riêng mobile device của IP mà không làm mất hầm SOCKS5 nếu trình duyệt vẫn đang chạy
-  Future<void> closeDeviceForIp(String ip) async {
-    _closingDeviceIps.add(ip);
+  /// Đóng riêng mobile device / giả lập của IP hoặc nhân vật mà không làm mất hầm SOCKS5 nếu trình duyệt vẫn đang chạy
+  Future<void> closeDeviceForIp(String ip, {String? entryKey}) async {
+    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
+        ? entryKey.trim()
+        : ip.trim();
+    _closingDeviceIps.add(trackKey);
     notifyListeners();
 
     try {
-      final session = _activeSessions[ip];
+      final session = _activeSessions[trackKey];
       final port = session?.emulatorPort;
       final remoteAddr = session?.remoteDeviceAddress;
+      final boundAdbSerial = session?.adbDeviceSerial;
+      final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+      final customAvdName = personaProfile?.avdName?.trim();
 
       if (remoteAddr != null) {
         try {
@@ -3069,42 +3675,68 @@ for root, _, files in os.walk(target_dir):
         session?.remoteDeviceAddress = null;
       }
 
-      final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
-      final personaProfile = PersonaService().getPersona(ip);
-      final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
-      final customAvdName = personaProfile?.avdName?.trim();
-      final targetAvd = (customAvdName != null && customAvdName.isNotEmpty)
-          ? customAvdName
-          : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
-      final activePort = port ??
-          _findRunningConsolePortForAvd(targetAvd) ??
-          _findRunningConsolePortForAvd(expectedNameAvd) ??
-          _findRunningConsolePortForAvd(personaAvdName);
-
-      // 1. Nếu emulator đang chạy, gửi lệnh sync đĩa và yêu cầu thoát an toàn để ghi dữ liệu ứng dụng
-      if (activePort != null) {
-        final serial = 'emulator-$activePort';
+      // 1. Xử lý đóng hoặc gỡ gắn kết giả lập LDPlayer / thiết bị ADB Android Studio
+      if (boundAdbSerial != null && boundAdbSerial.isNotEmpty) {
         try {
           final adbBin = await _findAdbExecutable();
-          await Process.run(adbBin, ['-s', serial, 'shell', 'sync']);
+          await Process.run(adbBin, ['-s', boundAdbSerial, 'shell', 'sync'])
+              .timeout(const Duration(seconds: 2));
+          await clearAdbGlobalProxy(boundAdbSerial);
+          if (session?.adbReversePort != null) {
+            await Process.run(
+              adbBin,
+              ['-s', boundAdbSerial, 'reverse', '--remove', 'tcp:${session!.adbReversePort}'],
+            ).timeout(const Duration(seconds: 2));
+          }
         } catch (_) {}
-        try {
-          // Gỡ proxy trước khi snapshot để tránh lưu cố định port proxy cũ của phiên này vào ảnh đĩa
-          await clearAdbGlobalProxy(serial);
-        } catch (_) {}
-        try {
-          // Lưu snapshot default_boot hiện tại để lưu trạng thái app mới nhất
-          await _saveSnapshotViaConsole(activePort, snapshotName: 'default_boot');
-        } catch (_) {}
-        try {
-          // Gửi lệnh kill an toàn tới emulator console
-          await _gracefulKillEmulatorViaConsole(activePort);
-        } catch (_) {}
-        // Đợi tối đa 1.5 giây để tiến trình emulator tự động thoát êm đẹp
-        for (int i = 0; i < 15; i++) {
-          await Future.delayed(const Duration(milliseconds: 100));
-          if (!_isDeviceProcessAliveForIp(ip)) break;
+
+        final ldIdx = session?.ldPlayerIndex ?? LdPlayerAdbParser.parseLdPlayerIndex(customAvdName);
+        if (ldIdx != null) {
+          try {
+            await LdPlayerService().quitVm(ldIdx);
+          } catch (_) {}
+        }
+
+        session?.adbDeviceSerial = null;
+        session?.ldPlayerIndex = null;
+        session?.adbReversePort = null;
+        session?.deviceLaunchedAt = null;
+      } else {
+        // 2. Xử lý tắt máy ảo Android Studio AVD truyền thống
+        final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
+        final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
+        final targetAvd = (customAvdName != null &&
+                customAvdName.isNotEmpty &&
+                !LdPlayerAdbParser.isExternalEmulatorId(customAvdName))
+            ? customAvdName
+            : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
+        final activePort = port ??
+            (trackKey == ip
+                ? (_findRunningConsolePortForAvd(targetAvd) ??
+                    _findRunningConsolePortForAvd(expectedNameAvd) ??
+                    _findRunningConsolePortForAvd(personaAvdName))
+                : _findRunningConsolePortForAvd(targetAvd));
+
+        if (activePort != null) {
+          final serial = 'emulator-$activePort';
+          try {
+            final adbBin = await _findAdbExecutable();
+            await Process.run(adbBin, ['-s', serial, 'shell', 'sync']);
+          } catch (_) {}
+          try {
+            await clearAdbGlobalProxy(serial);
+          } catch (_) {}
+          try {
+            await _saveSnapshotViaConsole(activePort, snapshotName: 'default_boot');
+          } catch (_) {}
+          try {
+            await _gracefulKillEmulatorViaConsole(activePort);
+          } catch (_) {}
+          for (int i = 0; i < 15; i++) {
+            await Future.delayed(const Duration(milliseconds: 100));
+            if (!_isDeviceProcessAliveForIp(ip, entryKey: trackKey)) break;
+          }
         }
       }
 
@@ -3122,34 +3754,67 @@ for root, _, files in os.walk(target_dir):
         session?.httpBridgeProcess = null;
       }
 
+      if (session?.httpBridgeServer != null) {
+        try {
+          await session!.httpBridgeServer!.close();
+        } catch (_) {}
+        session?.httpBridgeServer = null;
+      }
+
       session?.emulatorPort = null;
 
-      // 2. Chỉ cưỡng bức pkill -9 nếu tiến trình vẫn còn bị kẹt sau graceful shutdown
+      // Xóa file metadata device_<trackKey>.json nếu có
       try {
-        if (_isDeviceProcessAliveForIp(ip)) {
-          await Process.run('pkill', ['-9', '-f', 'device_profiles/ip_$sanitizedIp']);
-          await Process.run('pkill', ['-9', '-f', 'persona_$sanitizedIp']);
-        }
+        final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final homeDir = Platform.environment['USERPROFILE'] ??
+            Platform.environment['HOME'] ??
+            Directory.systemTemp.path;
+        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedTrackKey.json'));
+        if (metaFile.existsSync()) metaFile.deleteSync();
       } catch (_) {}
 
+      // Chỉ cưỡng bức pkill -9 nếu tiến trình AVD chuẩn vẫn còn kẹt sau graceful shutdown
+      if (trackKey == ip && !Platform.isWindows) {
+        try {
+          final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+          if (_isDeviceProcessAliveForIp(ip, entryKey: trackKey)) {
+            await Process.run('pkill', ['-9', '-f', 'device_profiles/ip_$sanitizedIp']);
+            await Process.run('pkill', ['-9', '-f', 'persona_$sanitizedIp']);
+          }
+        } catch (_) {}
+      }
+
       // Nếu browser cũng không còn chạy thì giải phóng hoàn toàn session SOCKS5
-      if (!_isSystemProcessAliveForIp(ip)) {
-        final s = _activeSessions.remove(ip);
+      final hasActiveChild = trackKey == ip &&
+          _activeSessions.keys.any(
+            (k) =>
+                k.startsWith('$ip##') &&
+                (_isSystemProcessAliveForIp(ip, entryKey: k) ||
+                    _isDeviceProcessAliveForIp(ip, entryKey: k)),
+          );
+      if (!hasActiveChild && !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
+        final s = _activeSessions.remove(trackKey);
         if (s != null) {
           await s.stop();
         }
       }
     } finally {
-      // Đợi ngắn một chút để OS dọn sạch PID trong /proc trước khi gỡ cờ closing
       await Future.delayed(const Duration(milliseconds: 300));
-      _closingDeviceIps.remove(ip);
+      _closingDeviceIps.remove(trackKey);
       notifyListeners();
     }
   }
 
-  /// Tìm serial ADB (ví dụ emulator-5554 hoặc IP:port) đang chạy cho một IP nhân vật cụ thể
-  Future<String?> getRunningDeviceSerialForIp(String ip) async {
-    final session = _activeSessions[ip];
+  /// Tìm serial ADB (ví dụ emulator-5554 hoặc IP:port) đang chạy cho một IP / nhân vật cụ thể
+  Future<String?> getRunningDeviceSerialForIp(String ip, {String? entryKey}) async {
+    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
+    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
+        ? entryKey.trim()
+        : ip.trim();
+    final session = _activeSessions[trackKey] ?? _activeSessions[cleanIp];
+    if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
+      return session.adbDeviceSerial;
+    }
     if (session?.remoteDeviceAddress != null && session!.remoteDeviceAddress!.isNotEmpty) {
       return session.remoteDeviceAddress;
     }
@@ -3157,12 +3822,42 @@ for root, _, files in os.walk(target_dir):
       return 'emulator-${session!.emulatorPort}';
     }
 
+    final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+    final customAvdName = personaProfile?.avdName?.trim();
+
+    // Nếu nhân vật gắn giả lập LDPlayer hoặc ADB trong Android Studio đang mở sẵn
+    if (customAvdName != null && LdPlayerAdbParser.isExternalEmulatorId(customAvdName)) {
+      if (LdPlayerAdbParser.isAdbConnectedId(customAvdName)) {
+        return LdPlayerAdbParser.parseAdbSerial(customAvdName);
+      }
+      final ldIdx = LdPlayerAdbParser.parseLdPlayerIndex(customAvdName);
+      if (ldIdx != null) {
+        final adbBin = await _findExistingAdbForDiscovery();
+        if (adbBin != null) {
+          try {
+            final devRes = await Process.run(adbBin, ['devices', '-l'])
+                .timeout(const Duration(seconds: 2));
+            if (devRes.exitCode == 0) {
+              final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(devRes.stdout.toString());
+              final emuS = LdPlayerAdbParser.ldPlayerEmulatorSerial(ldIdx);
+              final tcpS = LdPlayerAdbParser.ldPlayerTcpSerial(ldIdx);
+              for (final rec in records) {
+                if (rec.matchesSerial(emuS) || rec.matchesSerial(tcpS)) {
+                  return rec.serial;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
     final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
     final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
-    final personaProfile = PersonaService().getPersona(ip);
     final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
-    final customAvdName = personaProfile?.avdName?.trim();
-    final targetAvd = (customAvdName != null && customAvdName.isNotEmpty)
+    final targetAvd = (customAvdName != null &&
+            customAvdName.isNotEmpty &&
+            !LdPlayerAdbParser.isExternalEmulatorId(customAvdName))
         ? customAvdName
         : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
 

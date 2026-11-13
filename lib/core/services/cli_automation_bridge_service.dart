@@ -457,45 +457,91 @@ def close_browser(ips):
             except Exception:
                 pass
 
+def _resolve_adb_binary():
+    candidates = []
+    for env_key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        val = os.environ.get(env_key)
+        if val:
+            candidates.append(os.path.join(val, "platform-tools", "adb.exe" if os.name == "nt" else "adb"))
+    local_app = os.environ.get("LOCALAPPDATA")
+    if local_app:
+        candidates.append(os.path.join(local_app, "Android", "Sdk", "platform-tools", "adb.exe"))
+    candidates.append(os.path.expanduser("~/Android/Sdk/platform-tools/adb"))
+    if os.name == "nt":
+        for drv in ("C", "D", "E"):
+            candidates.append(os.path.join(f"{drv}:/", "Android", "Sdk", "platform-tools", "adb.exe"))
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return "adb"
+
+def _find_ldconsole_binary():
+    if os.name != "nt":
+        return None
+    for env_key in ("LDPLAYER_HOME", "LDPLAYER_DIR"):
+        val = os.environ.get(env_key)
+        if val:
+            for bin_name in ("ldconsole.exe", "dnconsole.exe"):
+                p = os.path.join(val, bin_name)
+                if os.path.exists(p):
+                    return p
+    for drv in ("C", "D", "E", "F", "G"):
+        for folder in (
+            "LDPlayer/LDPlayer9",
+            "LDPlayer/LDPlayer4.0",
+            "LDPlayer",
+            "XuanZhi/LDPlayer9",
+            "XuanZhi/LDPlayer",
+            "ChangZhi/dnplayer2",
+            "leidian/LDPlayer9",
+        ):
+            for bin_name in ("ldconsole.exe", "dnconsole.exe"):
+                p = os.path.normpath(f"{drv}:/{folder}/{bin_name}")
+                if os.path.exists(p):
+                    return p
+    return None
+
 def open_device(ip, device_type="mobile", avd_name=None):
     sdk_emulator = os.path.expanduser("~/Android/Sdk/emulator/emulator")
     if not os.path.exists(sdk_emulator):
         sdk_emulator = "emulator"
 
-    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-    if not os.path.exists(sdk_adb):
-        sdk_adb = "adb"
+    sdk_adb = _resolve_adb_binary()
 
-    sanitized_ip = ip.replace(".", "_").replace(":", "_")
+    clean_ip = ip.split("##")[0] if "##" in ip else ip
+    sanitized_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', ip)
     target_avd = avd_name
     if not target_avd:
         profiles = _load_profiles()
-        p_profile = profiles.get(ip, {})
+        p_profile = profiles.get(ip) or profiles.get(clean_ip) or {}
         persona_name = p_profile.get("name")
-        custom_avd = p_profile.get("avd_name")
-        name_avd = _generate_persona_avd_name(ip, persona_name)
-        ip_avd = f"Pixel_10_Pro_persona_{sanitized_ip}"
-        
-        try:
-            res = subprocess.run([sdk_emulator, "-list-avds"], stdout=subprocess.PIPE, text=True, check=False)
-            avds = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-            if custom_avd and custom_avd in avds:
-                target_avd = custom_avd
-            elif name_avd in avds:
-                target_avd = name_avd
-            elif ip_avd in avds:
-                target_avd = ip_avd
-            elif avds:
-                target_avd = avds[0]
-        except Exception:
-            pass
+        custom_avd = (p_profile.get("avd_name") or "").strip()
+        if custom_avd.startswith("ldplayer:") or custom_avd.startswith("adb:"):
+            target_avd = custom_avd
+        else:
+            name_avd = _generate_persona_avd_name(clean_ip, persona_name)
+            ip_avd = f"Pixel_10_Pro_persona_{sanitized_ip}"
+            try:
+                res = subprocess.run([sdk_emulator, "-list-avds"], stdout=subprocess.PIPE, text=True, check=False)
+                avds = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+                if custom_avd and custom_avd in avds:
+                    target_avd = custom_avd
+                elif name_avd in avds:
+                    target_avd = name_avd
+                elif ip_avd in avds:
+                    target_avd = ip_avd
+                elif avds:
+                    target_avd = avds[0]
+            except Exception:
+                pass
 
     if not target_avd:
-        print("Không tìm thấy máy ảo AVD nào trong hệ thống Android SDK!", file=sys.stderr)
+        print("Không tìm thấy máy ảo AVD hoặc LDPlayer/ADB nào trong cấu hình nhân vật!", file=sys.stderr)
         sys.exit(1)
 
-    # 1. Khởi tạo đường hầm SOCKS5 SSH cho IP này
-    socks5_proxy = _start_socks5_for_ip(ip)
+    # 1. Khởi tạo đường hầm SOCKS5 SSH cho IP này (bỏ qua nếu localhost)
+    is_local_direct = clean_ip in ("127.0.0.1", "localhost")
+    socks5_proxy = None if is_local_direct else _start_socks5_for_ip(clean_ip)
     socks5_port = None
     if socks5_proxy and ":" in socks5_proxy:
         try:
@@ -535,6 +581,74 @@ def open_device(ip, device_type="mobile", avd_name=None):
             except Exception as e:
                 print(f"Lỗi khởi động HTTP bridge cho thiết bị: {e}", file=sys.stderr)
                 http_proxy_port = None
+
+    # Nhánh A: Giả lập LDPlayer hoặc thiết bị ADB trong Android Studio
+    if target_avd.startswith("ldplayer:") or target_avd.startswith("adb:"):
+        adb_serial = None
+        ld_idx = None
+        if target_avd.startswith("adb:"):
+            adb_serial = target_avd[len("adb:"):].strip()
+        else:
+            try:
+                ld_idx = int(target_avd[len("ldplayer:"):].strip())
+            except Exception:
+                ld_idx = 0
+            emu_s = f"emulator-{5554 + ld_idx * 2}"
+            tcp_s = f"127.0.0.1:{5555 + ld_idx * 2}"
+            try:
+                subprocess.run([sdk_adb, "connect", tcp_s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                dev_out = subprocess.run([sdk_adb, "devices"], stdout=subprocess.PIPE, text=True, check=False).stdout
+                online_serials = [ln.split()[0] for ln in dev_out.splitlines()[1:] if len(ln.split()) >= 2 and ln.split()[1] == "device"]
+                if emu_s in online_serials:
+                    adb_serial = emu_s
+                elif tcp_s in online_serials:
+                    adb_serial = tcp_s
+            except Exception:
+                pass
+            if not adb_serial:
+                ld_bin = _find_ldconsole_binary()
+                if ld_bin:
+                    subprocess.run([ld_bin, "modify", "--index", str(ld_idx), "--adb", "1"], check=False)
+                    subprocess.run([ld_bin, "launch", "--index", str(ld_idx)], check=False)
+                    for _ in range(45):
+                        time.sleep(2)
+                        subprocess.run([sdk_adb, "connect", tcp_s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        dev_out = subprocess.run([sdk_adb, "devices"], stdout=subprocess.PIPE, text=True, check=False).stdout
+                        online_serials = [ln.split()[0] for ln in dev_out.splitlines()[1:] if len(ln.split()) >= 2 and ln.split()[1] == "device"]
+                        if emu_s in online_serials:
+                            adb_serial = emu_s
+                            break
+                        if tcp_s in online_serials:
+                            adb_serial = tcp_s
+                            break
+
+        if not adb_serial:
+            print(f"Không thể kết nối ADB tới giả lập {target_avd}. Hãy kiểm tra LDPlayer/Android Studio.", file=sys.stderr)
+            sys.exit(1)
+
+        if http_proxy_port:
+            r_rev = subprocess.run([sdk_adb, "-s", adb_serial, "reverse", f"tcp:{http_proxy_port}", f"tcp:{http_proxy_port}"], check=False)
+            if r_rev.returncode == 0:
+                subprocess.run([sdk_adb, "-s", adb_serial, "shell", "settings", "put", "global", "http_proxy", f"127.0.0.1:{http_proxy_port}"], check=False)
+        else:
+            subprocess.run([sdk_adb, "-s", adb_serial, "shell", "settings", "put", "global", "http_proxy", ":0"], check=False)
+
+        tmp_dir = os.path.join(DATA_DIR, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        dev_meta_file = os.path.join(tmp_dir, f"device_{sanitized_ip}.json")
+        with open(dev_meta_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "ip": clean_ip,
+                "entry_key": ip,
+                "target_avd": target_avd,
+                "adb_serial": adb_serial,
+                "ldplayer_index": ld_idx,
+                "bridge_pid": bridge_proc.pid if bridge_proc else None,
+                "http_proxy_port": http_proxy_port,
+                "socks5_port": socks5_port
+            }, f)
+        print(f"Đã kết nối giả lập {target_avd} ({adb_serial}) cho {ip}")
+        return
 
     # 3. Tìm cổng console khả dụng cho emulator (5554 đến 5584 chẵn)
     console_port = 5554
@@ -621,16 +735,17 @@ def open_device(ip, device_type="mobile", avd_name=None):
         print(f"Lỗi khởi chạy máy ảo cho IP {ip}: {e}", file=sys.stderr)
 
 def close_device(ip=None):
-    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-    if not os.path.exists(sdk_adb):
-        sdk_adb = "adb"
+    sdk_adb = _resolve_adb_binary()
 
     tmp_dir = os.path.join(DATA_DIR, "tmp")
     if ip:
-        sanitized_ip = ip.replace(".", "_").replace(":", "_")
+        sanitized_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', ip)
         dev_meta_file = os.path.join(tmp_dir, f"device_{sanitized_ip}.json")
         console_port = None
         bridge_pid = None
+        adb_serial = None
+        ld_idx = None
+        http_proxy_port = None
         if os.path.exists(dev_meta_file):
             try:
                 with open(dev_meta_file, "r", encoding="utf-8") as f:
@@ -638,15 +753,37 @@ def close_device(ip=None):
                 console_port = meta.get("console_port")
                 bridge_pid = meta.get("bridge_pid")
                 emu_pid = meta.get("emulator_pid")
+                adb_serial = meta.get("adb_serial")
+                ld_idx = meta.get("ldplayer_index")
+                http_proxy_port = meta.get("http_proxy_port")
                 if bridge_pid:
-                    subprocess.run(["kill", "-9", str(bridge_pid)], check=False)
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/F", "/PID", str(bridge_pid)], check=False)
+                    else:
+                        subprocess.run(["kill", "-9", str(bridge_pid)], check=False)
                 if emu_pid:
-                    subprocess.run(["kill", str(emu_pid)], check=False)
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(emu_pid)], check=False)
+                    else:
+                        subprocess.run(["kill", str(emu_pid)], check=False)
                 os.remove(dev_meta_file)
             except Exception:
                 pass
 
-        if console_port:
+        if adb_serial:
+            try:
+                subprocess.run([sdk_adb, "-s", adb_serial, "shell", "settings", "put", "global", "http_proxy", ":0"], check=False)
+                if http_proxy_port:
+                    subprocess.run([sdk_adb, "-s", adb_serial, "reverse", "--remove", f"tcp:{http_proxy_port}"], check=False)
+            except Exception:
+                pass
+            if ld_idx is not None:
+                ld_bin = _find_ldconsole_binary()
+                if ld_bin:
+                    subprocess.run([ld_bin, "quit", "--index", str(ld_idx)], check=False)
+                else:
+                    subprocess.run([sdk_adb, "-s", adb_serial, "emu", "kill"], check=False)
+        elif console_port:
             serial = f"emulator-{console_port}"
             try:
                 subprocess.run([sdk_adb, "-s", serial, "shell", "settings", "put", "global", "http_proxy", ":0"], check=False)
@@ -684,24 +821,30 @@ def close_device(ip=None):
             print(f"Lỗi tắt máy ảo: {e}", file=sys.stderr)
 
 def get_device_serial_for_ip(ip):
-    sanitized_ip = ip.replace(".", "_").replace(":", "_")
+    clean_ip = ip.split("##")[0] if "##" in ip else ip
+    sanitized_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', ip)
     profiles = _load_profiles()
-    p_profile = profiles.get(ip, {})
+    p_profile = profiles.get(ip) or profiles.get(clean_ip) or {}
     persona_name = p_profile.get("name")
     custom_avd = p_profile.get("avd_name")
-    name_avd = _generate_persona_avd_name(ip, persona_name)
+    name_avd = _generate_persona_avd_name(clean_ip, persona_name)
     ip_avd = f"Pixel_10_Pro_persona_{sanitized_ip}"
     valid_avds = set(filter(None, [custom_avd, name_avd, ip_avd]))
 
-    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-    if not os.path.exists(sdk_adb): sdk_adb = "adb"
+    sdk_adb = _resolve_adb_binary()
     
     # 1. Kiểm tra device meta
     dev_meta = os.path.join(DATA_DIR, "tmp", f"device_{sanitized_ip}.json")
     if os.path.exists(dev_meta):
         try:
             with open(dev_meta, "r", encoding="utf-8") as f:
-                cport = json.load(f).get("console_port")
+                meta_obj = json.load(f)
+                adb_serial = meta_obj.get("adb_serial")
+                if adb_serial:
+                    chk = subprocess.run([sdk_adb, "-s", adb_serial, "get-state"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if "device" in chk.stdout:
+                        return adb_serial
+                cport = meta_obj.get("console_port")
                 if cport:
                     test_serial = f"emulator-{cport}"
                     chk = subprocess.run([sdk_adb, "-s", test_serial, "get-state"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
@@ -709,6 +852,24 @@ def get_device_serial_for_ip(ip):
                         return test_serial
         except Exception:
             pass
+
+    # 1b. Hỗ trợ trực tiếp định danh giả lập LDPlayer (ldplayer:<index>) và ADB (adb:<serial>)
+    if custom_avd and isinstance(custom_avd, str):
+        cavd = custom_avd.strip()
+        if cavd.startswith("adb:"):
+            target_s = cavd[4:].strip()
+            if target_s:
+                chk = subprocess.run([sdk_adb, "-s", target_s, "get-state"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                if "device" in chk.stdout:
+                    return target_s
+        elif cavd.startswith("ldplayer:"):
+            parts = cavd.split(":")
+            if len(parts) >= 2 and parts[1].isdigit():
+                ld_idx = int(parts[1])
+                for cand in (f"emulator-{5554 + ld_idx * 2}", f"127.0.0.1:{5555 + ld_idx * 2}"):
+                    chk = subprocess.run([sdk_adb, "-s", cand, "get-state"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if "device" in chk.stdout:
+                        return cand
             
     # 2. Quét adb devices khớp AVD
     try:
@@ -726,8 +887,7 @@ def get_device_serial_for_ip(ip):
     return None
 
 def fast_action(ips, platform="facebook", action="like", url=None, comment=None):
-    sdk_adb = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
-    if not os.path.exists(sdk_adb): sdk_adb = "adb"
+    sdk_adb = _resolve_adb_binary()
     
     profiles = _load_profiles()
     target_serials = {}

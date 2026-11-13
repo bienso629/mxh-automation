@@ -65,9 +65,19 @@ class AdbManagerService {
     return true;
   }
 
-  /// Lấy đường dẫn binary ADB hợp lệ nhất (Ưu tiên: 1. Đã nhúng -> 2. Biến môi trường hệ thống / SDK)
+  /// Lấy đường dẫn binary ADB hợp lệ nhất.
+  /// Ưu tiên: 1. Android Studio SDK trên máy (để dùng chung đúng ADB daemon với Android Studio / LDPlayer,
+  /// tránh xung đột version làm reset kết nối ADB) -> 2. ADB nhúng nội bộ -> 3. Tự động tải về.
   Future<String> resolveAdbPath() async {
-    // 1. Kiểm tra ADB trong bộ nhúng nội bộ của ứng dụng
+    // 1. Ưu tiên ADB của Android Studio / SDK hệ thống nếu đã cài đặt sẵn
+    final sysCandidates = _getSystemCandidates();
+    for (final c in sysCandidates) {
+      if (c.isNotEmpty && File(c).existsSync()) {
+        return c;
+      }
+    }
+
+    // 2. Kiểm tra ADB trong bộ nhúng nội bộ của ứng dụng
     final embeddedPath = await getEmbeddedAdbPath();
     if (File(embeddedPath).existsSync()) {
       if (!Platform.isWindows) {
@@ -76,14 +86,6 @@ class AdbManagerService {
         } catch (_) {}
       }
       return embeddedPath;
-    }
-
-    // 2. Tìm kiếm trên các đường dẫn tiêu chuẩn của hệ điều hành
-    final sysCandidates = _getSystemCandidates();
-    for (final c in sysCandidates) {
-      if (File(c).existsSync()) {
-        return c;
-      }
     }
 
     // 3. Nếu chưa có, tự động tải và cài đặt ngay
@@ -97,25 +99,40 @@ class AdbManagerService {
   }
 
   List<String> _getSystemCandidates() {
-    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+    final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
+    final binName = Platform.isWindows ? 'adb.exe' : 'adb';
     final list = <String>[];
+
+    // Biến môi trường SDK chuẩn của Android Studio
+    for (final envKey in ['ANDROID_HOME', 'ANDROID_SDK_ROOT']) {
+      final sdkDir = Platform.environment[envKey];
+      if (sdkDir != null && sdkDir.trim().isNotEmpty) {
+        list.add(p.join(sdkDir.trim(), 'platform-tools', binName));
+      }
+    }
 
     if (Platform.isWindows) {
       final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
       list.addAll([
-        p.join(localAppData, 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
-        p.join(home, 'AppData', 'Local', 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
+        if (localAppData.isNotEmpty)
+          p.join(localAppData, 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
+        if (home.isNotEmpty)
+          p.join(home, 'AppData', 'Local', 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
+        r'C:\Android\Sdk\platform-tools\adb.exe',
+        r'D:\Android\Sdk\platform-tools\adb.exe',
+        r'E:\Android\Sdk\platform-tools\adb.exe',
       ]);
     } else if (Platform.isMacOS) {
       list.addAll([
-        p.join(home, 'Library', 'Android', 'sdk', 'platform-tools', 'adb'),
+        if (home.isNotEmpty) p.join(home, 'Library', 'Android', 'sdk', 'platform-tools', 'adb'),
         '/opt/homebrew/bin/adb',
         '/usr/local/bin/adb',
       ]);
     } else if (Platform.isLinux) {
       list.addAll([
-        p.join(home, 'Android', 'Sdk', 'platform-tools', 'adb'),
-        p.join(home, 'android-sdk', 'platform-tools', 'adb'),
+        if (home.isNotEmpty) p.join(home, 'Android', 'Sdk', 'platform-tools', 'adb'),
+        if (home.isNotEmpty) p.join(home, 'android-sdk', 'platform-tools', 'adb'),
+        '/opt/android-sdk/platform-tools/adb',
         '/usr/bin/adb',
         '/usr/local/bin/adb',
       ]);

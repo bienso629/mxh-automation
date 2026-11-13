@@ -571,6 +571,67 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (dialogCtx, setDialogState) {
+          Future<void> refreshModalDevices({bool forceRefresh = false, bool showToast = false}) async {
+            if (dialogCtx.mounted) {
+              setDialogState(() {
+                isLoadingAvds = true;
+              });
+            }
+            try {
+              final results = await Future.wait([
+                _socks5Service.getAvailableAvds(forceRefresh: forceRefresh),
+                _socks5Service.hasDeviceForPersona(
+                  ip: persona.ip,
+                  personaName: persona.name,
+                  avdName: selectedAvd ?? persona.avdName,
+                ),
+              ]);
+              final avds = results[0] as List<String>;
+              final hasDev = results[1] as bool;
+              final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
+              final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
+
+              if (mounted) {
+                setState(() {
+                  _availableAvds = avds.toSet();
+                });
+              }
+
+              if (dialogCtx.mounted) {
+                setDialogState(() {
+                  availableAvds = avds;
+                  hasPersonaAvd = hasDev ||
+                      (selectedAvd != null && selectedAvd!.trim().isNotEmpty) ||
+                      avds.contains(expectedPersonaAvd) ||
+                      avds.contains(legacyPersonaClone);
+                  isLoadingAvds = false;
+                  if (selectedAvd == null && avds.isNotEmpty) {
+                    if (avds.contains(expectedPersonaAvd)) {
+                      selectedAvd = expectedPersonaAvd;
+                    } else if (avds.contains(legacyPersonaClone)) {
+                      selectedAvd = legacyPersonaClone;
+                    }
+                  }
+                });
+                if (showToast) {
+                  final ldCount = avds.where(Socks5ProxyService.isExternalEmulatorId).length;
+                  AppToast.success(
+                    dialogCtx,
+                    ldCount > 0
+                        ? 'Đã quét thấy ${avds.length} máy ảo (gồm $ldCount giả lập LDPlayer / ADB)'
+                        : 'Đã làm mới danh sách máy ảo (${avds.length} thiết bị)',
+                  );
+                }
+              }
+            } catch (_) {
+              if (dialogCtx.mounted) {
+                setDialogState(() {
+                  isLoadingAvds = false;
+                });
+              }
+            }
+          }
+
           if (!didFetchAvds) {
             didFetchAvds = true;
             if (currentOrderId != null && currentOrderId!.isNotEmpty && latestOtpCode == null) {
@@ -594,35 +655,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                 });
               }
             });
-            Future.wait([
-              _socks5Service.getAvailableAvds(),
-              _socks5Service.hasDeviceForPersona(ip: persona.ip, personaName: persona.name, avdName: persona.avdName),
-            ]).then((results) {
-              if (dialogCtx.mounted) {
-                final avds = results[0] as List<String>;
-                final hasDev = results[1] as bool;
-                final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
-                final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
-                setDialogState(() {
-                  availableAvds = avds;
-                  hasPersonaAvd = hasDev || avds.contains(expectedPersonaAvd) || avds.contains(legacyPersonaClone);
-                  isLoadingAvds = false;
-                  if (selectedAvd == null && avds.isNotEmpty) {
-                    if (avds.contains(expectedPersonaAvd)) {
-                      selectedAvd = expectedPersonaAvd;
-                    } else if (avds.contains(legacyPersonaClone)) {
-                      selectedAvd = legacyPersonaClone;
-                    }
-                  }
-                });
-              }
-            }).catchError((_) {
-              if (dialogCtx.mounted) {
-                setDialogState(() {
-                  isLoadingAvds = false;
-                });
-              }
-            });
+            refreshModalDevices();
           }
           return Dialog(
             backgroundColor: AppColors.cardBg,
@@ -1053,7 +1086,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                           ),
                                           const SizedBox(width: 8),
                                           Text(
-                                            useExternalDevice ? 'Thiết bị ngoại vi (WiFi ADB)' : 'Máy ảo Local AVD',
+                                            useExternalDevice
+                                                ? 'Thiết bị ngoại vi (WiFi ADB)'
+                                                : 'Máy ảo Android (AVD / LDPlayer)',
                                             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                                           ),
                                         ],
@@ -1279,35 +1314,104 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
                                                 const Text(
-                                                  'Chọn máy ảo (AVD)',
+                                                  'Chọn máy ảo (AVD / LDPlayer)',
                                                   style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                                                 ),
                                                 const SizedBox(width: 6),
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                                  decoration: BoxDecoration(
-                                                    color: hasPersonaAvd ? AppColors.accent.withValues(alpha: 0.15) : AppColors.danger.withValues(alpha: 0.15),
-                                                    borderRadius: BorderRadius.circular(3),
-                                                    border: Border.all(
-                                                      color: hasPersonaAvd ? AppColors.accent.withValues(alpha: 0.5) : AppColors.danger.withValues(alpha: 0.5),
-                                                      width: 0.8,
+                                                () {
+                                                  final isLdSel = Socks5ProxyService.isLdPlayerId(selectedAvd);
+                                                  final isAdbSel = Socks5ProxyService.isAdbConnectedId(selectedAvd);
+                                                  final isReady = isLdSel ||
+                                                      isAdbSel ||
+                                                      hasPersonaAvd ||
+                                                      (selectedAvd != null && availableAvds.contains(selectedAvd));
+                                                  final badgeLabel = isLdSel
+                                                      ? 'Đã gắn LDPlayer'
+                                                      : (isAdbSel
+                                                          ? 'Đã gắn ADB'
+                                                          : (isReady ? 'Đã có máy ảo' : 'Chưa cài đặt'));
+                                                  return Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                    decoration: BoxDecoration(
+                                                      color: isReady ? AppColors.accent.withValues(alpha: 0.15) : AppColors.danger.withValues(alpha: 0.15),
+                                                      borderRadius: BorderRadius.circular(3),
+                                                      border: Border.all(
+                                                        color: isReady ? AppColors.accent.withValues(alpha: 0.5) : AppColors.danger.withValues(alpha: 0.5),
+                                                        width: 0.8,
+                                                      ),
                                                     ),
-                                                  ),
-                                                  child: Text(
-                                                    hasPersonaAvd ? 'Đã có máy ảo' : 'Chưa cài đặt',
-                                                    style: TextStyle(
-                                                      fontSize: 9,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: hasPersonaAvd ? AppColors.accent : AppColors.danger,
+                                                    child: Text(
+                                                      badgeLabel,
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: isReady ? AppColors.accent : AppColors.danger,
+                                                      ),
                                                     ),
-                                                  ),
-                                                ),
+                                                  );
+                                                }(),
                                               ],
                                             ),
                                             Row(
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
-                                                if (!hasPersonaAvd) ...[
+                                                // NÚT QUÉT LẠI DANH SÁCH LDPLAYER / ANDROID STUDIO ADB
+                                                InkWell(
+                                                  onTap: isLoadingAvds
+                                                      ? null
+                                                      : () => refreshModalDevices(forceRefresh: true, showToast: true),
+                                                  borderRadius: BorderRadius.circular(4),
+                                                  child: Padding(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        if (isLoadingAvds)
+                                                          const SizedBox(
+                                                            width: 10,
+                                                            height: 10,
+                                                            child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accentCyan),
+                                                          )
+                                                        else
+                                                          const Icon(Icons.refresh_rounded, size: 12, color: AppColors.accentCyan),
+                                                        const SizedBox(width: 3),
+                                                        Text(
+                                                          isLoadingAvds ? 'Đang quét...' : 'Quét lại',
+                                                          style: const TextStyle(fontSize: 11, color: AppColors.accentCyan, fontWeight: FontWeight.bold),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                if (Socks5ProxyService.isExternalEmulatorId(selectedAvd)) ...[
+                                                  InkWell(
+                                                    onTap: () {
+                                                      final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
+                                                      final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
+                                                      setDialogState(() {
+                                                        selectedAvd = null;
+                                                        hasPersonaAvd = availableAvds.contains(expectedPersonaAvd) ||
+                                                            availableAvds.contains(legacyPersonaClone);
+                                                      });
+                                                    },
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    child: const Padding(
+                                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                                      child: Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: [
+                                                          Icon(Icons.link_off_rounded, size: 12, color: AppColors.warning),
+                                                          SizedBox(width: 3),
+                                                          Text(
+                                                            'Bỏ gắn',
+                                                            style: TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.bold),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ] else if (!hasPersonaAvd) ...[
                                                   // NÚT TẠO MỚI (chỉ hiện khi chưa có máy ảo)
                                                   InkWell(
                                                     onTap: (isCreatingPersonaAvd || isImportingPersonaAvd || isDeletingPersonaAvd)
@@ -1763,9 +1867,18 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                           ),
                                           child: DropdownButtonHideUnderline(
                                             child: DropdownButton<String?>(
-                                              value: availableAvds.contains(selectedAvd) ? selectedAvd : null,
+                                              value: (selectedAvd != null &&
+                                                      selectedAvd!.trim().isNotEmpty &&
+                                                      (availableAvds.contains(selectedAvd) ||
+                                                          Socks5ProxyService.isExternalEmulatorId(selectedAvd)))
+                                                  ? selectedAvd
+                                                  : null,
                                               hint: Text(
-                                                isLoadingAvds ? 'Đang quét...' : (availableAvds.isEmpty ? 'Chưa có AVD (Khuyên dùng Ngoại vi)' : 'Chọn AVD...'),
+                                                isLoadingAvds
+                                                    ? 'Đang quét AVD & LDPlayer...'
+                                                    : (availableAvds.isEmpty
+                                                        ? 'Chưa có máy ảo (Bấm Quét lại sau khi mở LDPlayer)'
+                                                        : 'Chọn máy ảo AVD hoặc giả lập LDPlayer...'),
                                                 style: const TextStyle(fontSize: 11, color: AppColors.textDim),
                                               ),
                                               dropdownColor: AppColors.sidebarBg,
@@ -1777,25 +1890,53 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                   value: null,
                                                   child: Text('Mặc định hệ thống', style: TextStyle(fontSize: 11.5, color: AppColors.textDim)),
                                                 ),
+                                                if (selectedAvd != null &&
+                                                    selectedAvd!.trim().isNotEmpty &&
+                                                    !availableAvds.contains(selectedAvd) &&
+                                                    Socks5ProxyService.isExternalEmulatorId(selectedAvd))
+                                                  DropdownMenuItem<String?>(
+                                                    value: selectedAvd,
+                                                    child: Text(
+                                                      '${_socks5Service.getVirtualDeviceDisplayLabel(selectedAvd!)} (Đang ngoại tuyến)',
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: const TextStyle(fontSize: 11.5, color: AppColors.warning),
+                                                    ),
+                                                  ),
                                                 ...availableAvds.map((avd) {
+                                                  final isExtEmu = Socks5ProxyService.isExternalEmulatorId(avd);
                                                   return DropdownMenuItem<String?>(
                                                     value: avd,
                                                     child: Text(
-                                                      avd,
+                                                      _socks5Service.getVirtualDeviceDisplayLabel(avd),
                                                       maxLines: 1,
                                                       overflow: TextOverflow.ellipsis,
-                                                      style: const TextStyle(fontSize: 11.5),
+                                                      style: TextStyle(
+                                                        fontSize: 11.5,
+                                                        color: isExtEmu ? AppColors.accentCyan : AppColors.textWhite,
+                                                        fontWeight: isExtEmu ? FontWeight.w600 : FontWeight.normal,
+                                                      ),
                                                     ),
                                                   );
                                                 }),
                                               ],
                                               onChanged: (val) {
+                                                final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
+                                                final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
                                                 setDialogState(() {
                                                   selectedAvd = val;
+                                                  hasPersonaAvd = (val != null && val.trim().isNotEmpty) ||
+                                                      availableAvds.contains(expectedPersonaAvd) ||
+                                                      availableAvds.contains(legacyPersonaClone);
                                                 });
                                               },
                                             ),
                                           ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        const Text(
+                                          'Hỗ trợ cả máy ảo Android Studio AVD và giả lập LDPlayer đang kết nối trong Android Studio (ADB).',
+                                          style: TextStyle(fontSize: 10, color: AppColors.textDim),
                                         ),
                                       ],
                                     ),
@@ -2950,7 +3091,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     // Trang thai browser cua CHINH card nay (card phu co entryKey rieng dang 'ip##n')
     final isBrowserRunning = socks5.isBrowserRunningForIp(item.ip, entryKey: item.entryKey);
     final isSubProfile = item.entryKey != null;
-    final isDeviceRunning = !isSubProfile && socks5.isDeviceRunningForIp(item.ip);
+    final isDeviceRunning = socks5.isDeviceRunningForIp(item.ip, entryKey: item.entryKey);
     final isAnyRunning = isBrowserRunning || isDeviceRunning;
     final isAlias = !item.isMain;
     final persona = isSubProfile
@@ -3766,11 +3907,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
                 const SizedBox(width: 6),
 
-                // 2. NÚT MỞ / ĐÓNG MOBILE DEVICE (mọi card đều có device)
+                // 2. NÚT MỞ / ĐÓNG MOBILE DEVICE (mọi card đều có device, kể cả card dùng chung IP gắn LDPlayer riêng)
                 Expanded(
                   child: () {
-                    final isOpeningDevice = _openingDeviceIps.contains(item.ip);
-                    final isClosingDevice = _closingDeviceIps.contains(item.ip);
+                    final deviceCardKey = item.entryKey ?? item.ip;
+                    final isOpeningDevice = _openingDeviceIps.contains(deviceCardKey);
+                    final isClosingDevice = _closingDeviceIps.contains(deviceCardKey);
                     final isDeviceBusy = isOpeningDevice || isClosingDevice;
                     final targetRemoteDevice = (persona != null && persona.useExternalDevice && (persona.externalDeviceAddress?.trim().isNotEmpty ?? false))
                         ? persona.externalDeviceAddress!.trim()
@@ -3782,12 +3924,15 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                             ? null
                             : () async {
                                 setState(() {
-                                  _closingDeviceIps.add(item.ip);
+                                  _closingDeviceIps.add(deviceCardKey);
                                 });
                                 try {
-                                  await _socks5Service.closeDeviceForIp(item.ip);
+                                  await _socks5Service.closeDeviceForIp(
+                                    item.ip,
+                                    entryKey: item.entryKey ?? persona?.effectiveEntryKey,
+                                  );
                                   if (mounted) {
-                                    AppToast.info(context, 'Đã đóng mobile device cho ${item.ip}');
+                                    AppToast.info(context, 'Đã đóng mobile device cho ${persona?.name ?? item.ip}');
                                   }
                                 } catch (e) {
                                   if (mounted) {
@@ -3796,7 +3941,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                 } finally {
                                   if (mounted) {
                                     setState(() {
-                                      _closingDeviceIps.remove(item.ip);
+                                      _closingDeviceIps.remove(deviceCardKey);
                                     });
                                   }
                                 }
@@ -3833,9 +3978,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     final legacyPersonaAvd = 'Pixel_10_Pro_persona_$sanitizedIp';
                     final bool hasLocalAvd = (currentP?.avdName != null &&
                             currentP!.avdName!.isNotEmpty &&
-                            (_availableAvds.contains(currentP.avdName) || currentP.avdName!.contains('persona_') || _availableAvds.isEmpty)) ||
-                        _availableAvds.contains(expectedNameAvd) ||
-                        _availableAvds.contains(legacyPersonaAvd);
+                            (_availableAvds.contains(currentP.avdName) ||
+                                Socks5ProxyService.isExternalEmulatorId(currentP.avdName) ||
+                                currentP.avdName!.contains('persona_') ||
+                                _availableAvds.isEmpty)) ||
+                        (!isSubProfile &&
+                            (_availableAvds.contains(expectedNameAvd) ||
+                                _availableAvds.contains(legacyPersonaAvd)));
                     final bool hasDeviceSetup = isExt || hasLocalAvd;
 
                     // Nếu chưa có thiết bị máy ảo, hiện nút "Cài đặt máy ảo" bấm vào mở modal hồ sơ
@@ -3844,6 +3993,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                         onPressed: () {
                           final p = currentP ?? PersonaProfile(
                             ip: item.ip,
+                            entryKey: item.entryKey,
                             name: 'Nhân vật ${item.ip}',
                             age: 25,
                             gender: 'Nam',
@@ -3876,18 +4026,22 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                           ? null
                           : () async {
                               setState(() {
-                                _openingDeviceIps.add(item.ip);
+                                _openingDeviceIps.add(deviceCardKey);
                               });
+                              final isExtEmu = Socks5ProxyService.isExternalEmulatorId(currentP?.avdName);
                               AppToast.info(
                                 context,
                                 isExt
                                     ? 'Đang kết nối thiết bị ngoại vi ($targetRemoteDevice)...'
-                                    : 'Đang khởi động mobile device cho ${item.ip}...',
+                                    : (isExtEmu
+                                        ? 'Đang kết nối giả lập ${_socks5Service.getVirtualDeviceDisplayLabel(currentP!.avdName!)}...'
+                                        : 'Đang khởi động mobile device cho ${item.ip}...'),
                               );
                               try {
                                 await _socks5Service.launchDeviceWithSocks5(
                                   server: item.server,
                                   ip: item.ip,
+                                  entryKey: item.entryKey ?? currentP?.effectiveEntryKey,
                                   remoteDeviceAddress: targetRemoteDevice,
                                   avdName: currentP?.avdName,
                                   deviceType: currentP?.deviceType ?? 'mobile',
@@ -3899,7 +4053,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     context,
                                     isExt
                                         ? 'Đã kết nối ngoại vi $targetRemoteDevice'
-                                        : 'Đã mở ${currentP?.deviceType == 'tablet' ? 'tablet' : 'mobile'} device qua ${item.ip}',
+                                        : (isExtEmu
+                                            ? 'Đã kết nối giả lập cho ${currentP?.name ?? item.ip}'
+                                            : 'Đã mở ${currentP?.deviceType == 'tablet' ? 'tablet' : 'mobile'} device qua ${item.ip}'),
                                   );
                                 }
                               } catch (e) {
@@ -3909,7 +4065,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                               } finally {
                                 if (mounted) {
                                   setState(() {
-                                    _openingDeviceIps.remove(item.ip);
+                                    _openingDeviceIps.remove(deviceCardKey);
                                   });
                                 }
                               }
