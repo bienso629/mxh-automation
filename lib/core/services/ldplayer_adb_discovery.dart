@@ -224,6 +224,27 @@ class LdPlayerAdbParser {
   /// LDPlayer quy ước cổng TCP ADB local: 127.0.0.1:(5555 + index * 2)
   static String ldPlayerTcpSerial(int index) => '127.0.0.1:${5555 + index * 2}';
 
+  /// Suy luận chỉ số `index` của giả lập LDPlayer từ serial ADB chuẩn (`emulator-5554` hoặc `127.0.0.1:5555`)
+  static int? inferLdPlayerIndexFromSerial(String? serial) {
+    if (serial == null || serial.trim().isEmpty) return null;
+    final clean = serial.trim();
+    final emuMatch = RegExp(r'^emulator-(\d+)$').firstMatch(clean);
+    if (emuMatch != null) {
+      final port = int.tryParse(emuMatch.group(1)!);
+      if (port != null && port >= 5554 && port <= 5682 && port.isEven) {
+        return (port - 5554) ~/ 2;
+      }
+    }
+    final tcpMatch = RegExp(r'^(?:127\.0\.0\.1|localhost):(\d+)$').firstMatch(clean);
+    if (tcpMatch != null) {
+      final port = int.tryParse(tcpMatch.group(1)!);
+      if (port != null && port >= 5555 && port <= 5683 && port.isOdd) {
+        return (port - 5555) ~/ 2;
+      }
+    }
+    return null;
+  }
+
   /// Nhãn dự phòng khi chưa tải kịp catalog chi tiết
   static String fallbackDisplayLabelForId(String id) {
     final clean = id.trim();
@@ -951,6 +972,33 @@ class LdPlayerService {
       configsByIndex: configs,
       includeConfigOnlyFallbacks: !list2Succeeded,
     );
+  }
+
+  /// Truy vấn trực tiếp trạng thái đang chạy thực tế từ `ldconsole list2`.
+  /// Trả về `null` nếu không gọi được `ldconsole` (ví dụ vướng quyền UAC) để tránh báo tắt nhầm từ dữ liệu file config tĩnh.
+  Future<List<LdPlayerInstance>?> queryLiveInstancesFromConsole() async {
+    final install = await findInstallation();
+    if (install == null) return null;
+
+    try {
+      final res = await Process.run(
+        install.consolePath,
+        ['list2'],
+        workingDirectory: install.installDir,
+        stdoutEncoding: null,
+        stderrEncoding: null,
+      ).timeout(const Duration(seconds: 3));
+      if (res.exitCode == 0) {
+        final list2Out = _decodeProcessBytes(res.stdout);
+        if (list2Out.trim().isNotEmpty) {
+          return LdPlayerAdbParser.parseLdConsoleList2Output(
+            list2Out,
+            includeConfigOnlyFallbacks: false,
+          );
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Tự động đảm bảo giả lập LDPlayer tại `index` đã bật cổng kết nối ADB cục bộ (`adbDebug = 1`)

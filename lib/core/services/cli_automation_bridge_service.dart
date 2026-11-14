@@ -119,13 +119,17 @@ def list_profiles():
         print(json.dumps([]))
         return
     profiles = []
-    for ip, p in data.items():
+    for key, p in data.items():
+        net_ip = p.get("ip") or (key.split("##")[0] if "##" in key else key)
         profiles.append({
-            "ip": ip,
+            "ip": key,
+            "entry_key": key,
+            "network_ip": net_ip,
             "name": p.get("name", "Unknown"),
             "gender": p.get("gender", ""),
             "age": p.get("age", 25),
             "bio": p.get("bio", ""),
+            "browser_profile_id": p.get("browser_profile_id"),
             "device_type": p.get("device_type", "mobile"),
             "avd_name": p.get("avd_name"),
             "external_device_address": p.get("external_device_address")
@@ -346,20 +350,31 @@ def _setup_facebook_vietnamese(profile_dir):
     except Exception:
         pass
 
+def _profile_dir_name_for_key(ip_or_key):
+    clean_ip = ip_or_key.split("##")[0] if "##" in ip_or_key else ip_or_key
+    if ip_or_key == clean_ip:
+        return f"ip_{re.sub(r'[^a-zA-Z0-9_-]', '_', clean_ip)}"
+    return f"ek_{re.sub(r'[^a-zA-Z0-9_-]', '_', ip_or_key)}"
+
 def open_browser(ips, url=None):
     if not ips:
         print("Lỗi: Cần cung cấp ít nhất một địa chỉ IP (--ip hoặc --ips)", file=sys.stderr)
         sys.exit(1)
 
+    profiles = _load_profiles()
     url_to_open = url or "https://type.vn"
     for ip in ips:
-        sanitized_ip = ip.replace(".", "_").replace(":", "_")
-        profile_dir = os.path.join(DATA_DIR, "browser_profiles", f"ip_{sanitized_ip}")
+        clean_ip = ip.split("##")[0] if "##" in ip else ip
+        dir_name = _profile_dir_name_for_key(ip)
+        profile_dir = os.path.join(DATA_DIR, "browser_profiles", dir_name)
         os.makedirs(profile_dir, exist_ok=True)
         _setup_facebook_vietnamese(profile_dir)
 
-        # 1. Khởi tạo đường hầm SOCKS5 SSH cho IP
-        socks5_proxy = _start_socks5_for_ip(ip)
+        p_info = profiles.get(ip) or ({} if "##" in ip else profiles.get(clean_ip, {}))
+        sys_profile_id = (p_info.get("browser_profile_id") or "").strip()
+
+        # 1. Khởi tạo đường hầm SOCKS5 SSH cho IP (bỏ qua nếu localhost)
+        socks5_proxy = None if clean_ip in ("127.0.0.1", "localhost") else _start_socks5_for_ip(clean_ip)
 
         # 2. Tìm Chrome/Chromium/Brave/Edge trên Linux
         candidates = [
@@ -382,9 +397,10 @@ def open_browser(ips, url=None):
             continue
 
         ext_dir = os.path.join(profile_dir, "vietnamese_meta_ext")
+        profile_arg = f"--profile-directory={sys_profile_id}" if sys_profile_id else f"--user-data-dir={profile_dir}"
         cmd = [
             browser_exe,
-            f"--user-data-dir={profile_dir}",
+            profile_arg,
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
@@ -432,16 +448,18 @@ def open_browser(ips, url=None):
 def close_browser(ips):
     tmp_dir = os.path.join(DATA_DIR, "tmp")
     for ip in ips:
-        sanitized_ip = ip.replace(".", "_").replace(":", "_")
-        needle = f"browser_profiles/ip_{sanitized_ip}"
+        clean_ip = ip.split("##")[0] if "##" in ip else ip
+        dir_name = _profile_dir_name_for_key(ip)
+        needle = f"browser_profiles/{dir_name}"
         try:
             subprocess.run(["pkill", "-f", needle], check=False)
-            print(f"Đã gửi tín hiệu đóng trình duyệt cho IP {ip}")
+            print(f"Đã gửi tín hiệu đóng trình duyệt cho {ip}")
         except Exception as e:
-            print(f"Lỗi đóng trình duyệt cho IP {ip}: {e}", file=sys.stderr)
+            print(f"Lỗi đóng trình duyệt cho {ip}: {e}", file=sys.stderr)
 
-        # Dọn dẹp tiến trình SSH SOCKS5 tương ứng
-        meta_file = os.path.join(tmp_dir, f"socks_{sanitized_ip}.json")
+        # Dọn dẹp tiến trình SSH SOCKS5 tương ứng nếu không phải localhost
+        sanitized_clean = clean_ip.replace(".", "_").replace(":", "_")
+        meta_file = os.path.join(tmp_dir, f"socks_{sanitized_clean}.json")
         if os.path.exists(meta_file):
             try:
                 with open(meta_file, "r", encoding="utf-8") as f:
@@ -513,7 +531,7 @@ def open_device(ip, device_type="mobile", avd_name=None):
     target_avd = avd_name
     if not target_avd:
         profiles = _load_profiles()
-        p_profile = profiles.get(ip) or profiles.get(clean_ip) or {}
+        p_profile = profiles.get(ip) or ({} if "##" in ip else profiles.get(clean_ip, {}))
         persona_name = p_profile.get("name")
         custom_avd = (p_profile.get("avd_name") or "").strip()
         if custom_avd.startswith("ldplayer:") or custom_avd.startswith("adb:"):
@@ -824,7 +842,7 @@ def get_device_serial_for_ip(ip):
     clean_ip = ip.split("##")[0] if "##" in ip else ip
     sanitized_ip = re.sub(r'[^a-zA-Z0-9_-]', '_', ip)
     profiles = _load_profiles()
-    p_profile = profiles.get(ip) or profiles.get(clean_ip) or {}
+    p_profile = profiles.get(ip) or ({} if "##" in ip else profiles.get(clean_ip, {}))
     persona_name = p_profile.get("name")
     custom_avd = p_profile.get("avd_name")
     name_avd = _generate_persona_avd_name(clean_ip, persona_name)
@@ -1130,19 +1148,28 @@ if __name__ == "__main__":
     buffer.writeln('   $helperPath list-profiles');
     buffer.writeln('');
 
-    // Trích xuất các IP trong Scope hiện tại nếu có
+    // Trích xuất các khóa định danh nhân vật (ProfileKey / entryKey) trong Scope hiện tại nếu có
     final scopeIps = <String>[];
     if (workingDir != null && workingDir.isNotEmpty) {
-      final ipRegex = RegExp(r'\b(?:\d{1,3}\.){3}\d{1,3}\b');
-      final matches = ipRegex.allMatches(workingDir);
-      for (final m in matches) {
-        final ipStr = m.group(0);
-        if (ipStr != null && !scopeIps.contains(ipStr)) {
-          scopeIps.add(ipStr);
+      final keyMatches = RegExp(r'ProfileKey:\s*([0-9a-zA-Z\.\:\_\-#]+)').allMatches(workingDir);
+      for (final m in keyMatches) {
+        final keyStr = m.group(1)?.trim();
+        if (keyStr != null && keyStr.isNotEmpty && !scopeIps.contains(keyStr)) {
+          scopeIps.add(keyStr);
+        }
+      }
+      if (scopeIps.isEmpty) {
+        final ipRegex = RegExp(r'\b(?:\d{1,3}\.){3}\d{1,3}(?:##\d+)?\b');
+        final matches = ipRegex.allMatches(workingDir);
+        for (final m in matches) {
+          final ipStr = m.group(0);
+          if (ipStr != null && !scopeIps.contains(ipStr)) {
+            scopeIps.add(ipStr);
+          }
         }
       }
     }
-    // Fallback: Nếu workingDir không có hoặc không trích xuất đủ IP, lấy từ PersonaService activeScopeIps
+    // Fallback: Nếu workingDir không có hoặc không trích xuất đủ khóa, lấy từ PersonaService activeScopeIps
     for (final activeIp in _personaService.activeScopeIps) {
       if (!scopeIps.contains(activeIp)) {
         scopeIps.add(activeIp);
@@ -1154,17 +1181,17 @@ if __name__ == "__main__":
       buffer.writeln(workingDir);
       buffer.writeln('');
       if (scopeIps.isNotEmpty) {
-        buffer.writeln('DANH SÁCH ${scopeIps.length} ĐỊA CHỈ IP ĐƯỢC CHỈ ĐỊNH TRONG SCOPE:');
+        buffer.writeln('DANH SÁCH ${scopeIps.length} MÃ ĐỊNH NHÂN VẬT (PROFILE KEY) ĐƯỢC CHỈ ĐỊNH TRONG SCOPE:');
         buffer.writeln(scopeIps.join(' '));
         buffer.writeln('');
       }
     }
 
     if (personas.isNotEmpty) {
-      buffer.writeln('DANH SÁCH TOÀN BỘ NHÂN VẬT & IP TRÊN HỆ THỐNG:');
+      buffer.writeln('DANH SÁCH TOÀN BỘ NHÂN VẬT & KHÓA ĐỊNH DANH TRÊN HỆ THỐNG:');
       for (final p in personas.values) {
         final emailStr = (p.email != null && p.email!.isNotEmpty) ? ' | Email: ${p.email}' : '';
-        buffer.writeln('- IP: ${p.ip} | Tên: ${p.name} | Giới tính: ${p.gender} | Tuổi: ${p.age}$emailStr');
+        buffer.writeln('- ProfileKey: ${p.effectiveEntryKey} | IP: ${p.ip} | Tên: ${p.name} | Giới tính: ${p.gender} | Tuổi: ${p.age}$emailStr');
         if (p.bio.isNotEmpty) {
           buffer.writeln('  Tiểu sử: ${p.bio}');
         }

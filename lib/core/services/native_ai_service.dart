@@ -160,15 +160,16 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         if (workingDir != null && workingDir.isNotEmpty) {
           if (workingDir.startsWith('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH') || workingDir.contains('👤 Nhân vật:')) {
             sysPrompt += '\n\n$workingDir\n\n🎯 QUY TẮC BẮT BUỘC TỐI THƯỢNG VỀ ĐA NHÂN VẬT (MULTI-PERSONAS SCOPE):\n'
-                '- Bạn CHỈ ĐƯỢC PHÉP thao tác, tương tác, mở trình duyệt hoặc mở thiết bị Android cho DUY NHẤT các nhân vật/IP nằm trong danh sách Scope trên.\n'
+                '- Mỗi nhân vật được định danh duy nhất bởi `ProfileKey` (ví dụ `127.0.0.1`, `127.0.0.1##2`, `127.0.0.1##3`... khi nhiều nhân vật dùng chung 1 địa chỉ mạng IP). Khi gọi bất kỳ công cụ nào (`open_profile_browser`, `close_profile_browser`, `open_profile_device`, `close_profile_device`, `fast_social_action`, `save_automation_macro`), BẮT BUỘC truyền nguyên vẹn `ProfileKey` vào tham số `ip` / `ips` (TUYỆT ĐỐI KHÔNG cắt bỏ hậu tố `##n`!).\n'
+                '- Bạn CHỈ ĐƯỢC PHÉP thao tác, tương tác, mở trình duyệt hoặc mở thiết bị Android cho DUY NHẤT các nhân vật nằm trong danh sách Scope trên.\n'
                 '- ĐẶC BIỆT KHI SCOPE CHỈ CÓ 1 NHÂN VẬT (hoặc người dùng chỉ chọn 1 profile):\n'
-                '  + BẮT BUỘC CHỈ MỞ ĐÚNG 1 TRÌNH DUYỆT HOẶC 1 THIẾT BỊ DUY NHẤT cho nhân vật đó. TUYỆT ĐỐI KHÔNG ĐƯỢC mở 2, 3 hay mở toàn bộ các máy/trình duyệt khác có trong hệ thống!\n'
-                '  + Khi gọi tool `open_profile_browser` hoặc `open_profile_device`: CHỈ truyền IP của nhân vật đó vào tham số `ip`, KHÔNG ĐƯỢC truyền mảng `ips` chứa nhiều IP.\n'
-                '  + TUYỆT ĐỐI KHÔNG được tự ý lấy các IP ngoài danh sách Scope trên (dù có gọi `list_profiles` hay thấy lịch sử trước đó).\n'
+                '  + BẮT BUỘC CHỈ MỞ ĐÚNG 1 TRÌNH DUYỆT HOẶC 1 THIẾT BỊ DUY NHẤT cho đúng `ProfileKey` của nhân vật đó. TUYỆT ĐỐI KHÔNG ĐƯỢC mở 2, 3 hay mở các nhân vật cùng IP khác!\n'
+                '  + Khi gọi tool `open_profile_browser` hoặc `open_profile_device`: CHỈ truyền `ProfileKey` của nhân vật đó vào tham số `ip`, KHÔNG ĐƯỢC truyền mảng `ips` chứa nhiều khóa.\n'
+                '  + TUYỆT ĐỐI KHÔNG được tự ý lấy các nhân vật ngoài danh sách Scope trên (dù có gọi `list_profiles` hay thấy lịch sử trước đó).\n'
                 '- KHI SCOPE CÓ NHIỀU NHÂN VẬT (ví dụ người dùng chọn 2, 3 nhân vật trong Scope):\n'
-                '  + MẶC ĐỊNH: Bất kỳ yêu cầu chung nào (mở video, xem link, lướt web, tương tác, seeding...) mà KHÔNG nêu đích danh một nhân vật cụ thể thì BẮT BUỘC PHẢI THỰC THI CHO TẤT CẢ các nhân vật trong Scope này. Truyền toàn bộ danh sách IP trong Scope vào tham số `ips` của tool `open_profile_browser` hoặc `open_profile_device`.\n'
-                '  + TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ chọn 1 nhân vật duy nhất rồi bỏ quên các nhân vật còn lại trong Scope khi người dùng không chỉ định riêng ai.\n'
-                '  + CHỈ KHI người dùng gọi đích danh tên 1 nhân vật (hoặc yêu cầu rõ "chỉ mở cho X"): Mới truyền đúng 1 IP của nhân vật đó vào tham số `ip`.\n'
+                '  + MẶC ĐỊNH: Bất kỳ yêu cầu chung nào (mở video, xem link, lướt web, tương tác, seeding...) mà KHÔNG nêu đích danh một nhân vật cụ thể thì BẮT BUỘC PHẢI THỰC THI CHO TẤT CẢ các nhân vật trong Scope này. Truyền toàn bộ danh sách `ProfileKey` trong Scope vào tham số `ips` của tool `open_profile_browser` hoặc `open_profile_device`.\n'
+                '  + TUYỆT ĐỐI KHÔNG ĐƯỢC gộp các nhân vật có cùng IP (như `127.0.0.1` và `127.0.0.1##2`) thành 1 mục duy nhất!\n'
+                '  + CHỈ KHI người dùng gọi đích danh tên 1 nhân vật (hoặc yêu cầu rõ "chỉ mở cho X"): Mới truyền đúng 1 `ProfileKey` của nhân vật đó vào tham số `ip`.\n'
                 '- MỖI LẦN NHẬN YÊU CẦU MỚI: Phải tuân thủ đúng phạm vi Scope đã được cung cấp phía trên.';
           } else {
             sysPrompt += '\n\n🎯 PHẠM VI LÀM VIỆC MỤC TIÊU: `$workingDir`\nMọi tác vụ terminal/tài khoản phải tuân thủ phạm vi này.';
@@ -216,14 +217,26 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
           }
         }
 
-        // Extract allowed IPs if there is a Personas Scope specified
+        // Extract allowed Persona keys (entryKey / ProfileKey) if there is a Personas Scope specified
         final List<String> allowedScopeIps = [];
-        if (workingDir != null && (workingDir.contains('SCOPE PERSONAS') || workingDir.contains('IP:'))) {
-          final ipMatches = RegExp(r'IP:\s*([0-9a-zA-Z\.\:\_\-]+)').allMatches(workingDir);
-          for (final m in ipMatches) {
-            final matchedIp = m.group(1)?.trim();
-            if (matchedIp != null && matchedIp.isNotEmpty && !allowedScopeIps.contains(matchedIp)) {
-              allowedScopeIps.add(matchedIp);
+        if (workingDir != null &&
+            (workingDir.contains('SCOPE PERSONAS') ||
+                workingDir.contains('ProfileKey:') ||
+                workingDir.contains('IP:'))) {
+          final keyMatches = RegExp(r'ProfileKey:\s*([0-9a-zA-Z\.\:\_\-#]+)').allMatches(workingDir);
+          for (final m in keyMatches) {
+            final matchedKey = m.group(1)?.trim();
+            if (matchedKey != null && matchedKey.isNotEmpty && !allowedScopeIps.contains(matchedKey)) {
+              allowedScopeIps.add(matchedKey);
+            }
+          }
+          if (allowedScopeIps.isEmpty) {
+            final ipMatches = RegExp(r'IP:\s*([0-9a-zA-Z\.\:\_\-#]+)').allMatches(workingDir);
+            for (final m in ipMatches) {
+              final matchedIp = m.group(1)?.trim();
+              if (matchedIp != null && matchedIp.isNotEmpty && !allowedScopeIps.contains(matchedIp)) {
+                allowedScopeIps.add(matchedIp);
+              }
             }
           }
         }
@@ -647,19 +660,24 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                     if (profiles.isEmpty) {
                       toolOutput = 'Chưa có hồ sơ nhân vật nào được tạo.';
                     } else {
-                      // Nếu có Scope personas được chọn, CHỈ trả về đúng các nhân vật trong Scope
+                      // Nếu có Scope personas được chọn, CHỈ trả về đúng các nhân vật trong Scope (theo effectiveEntryKey)
                       final filteredProfiles = allowedScopeIps.isNotEmpty
-                          ? profiles.values.where((p) => allowedScopeIps.contains(p.ip)).toList()
+                          ? profiles.values
+                              .where((p) => allowedScopeIps.contains(p.effectiveEntryKey))
+                              .toList()
                           : profiles.values.toList();
 
                       final list = filteredProfiles.map((p) => {
-                        'ip': p.ip,
+                        'ip': p.effectiveEntryKey,
+                        'entry_key': p.effectiveEntryKey,
+                        'network_ip': p.ip,
                         'name': p.name,
                         'age': p.age,
                         'gender': p.gender,
                         'bio': p.bio,
                         'device_type': p.deviceType,
                         'avd_name': p.avdName,
+                        'browser_profile_id': p.browserProfileId,
                         'use_external_device': p.useExternalDevice,
                         'external_device_address': p.externalDeviceAddress,
                       }).toList();
@@ -680,7 +698,7 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                       targetIps.add(singleIp);
                     }
 
-                    // Scope enforcement: Tuyệt đối không để lọt IP ngoài Scope hoặc mở tràn lan
+                    // Scope enforcement: Tuyệt đối không để lọt nhân vật ngoài Scope hoặc mở tràn lan
                     if (allowedScopeIps.isNotEmpty) {
                       if (allowedScopeIps.length == 1) {
                         // Scope chỉ có 1 nhân vật -> ÉP BUỘC chỉ mở duy nhất 1 nhân vật đó!
@@ -688,30 +706,30 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                         targetIps.add(allowedScopeIps.first);
                       } else {
                         // Scope có nhiều nhân vật
-                        // Kiểm tra xem người dùng có chỉ định đích danh 1 nhân vật trong nội dung prompt không
+                        // Kiểm tra xem người dùng có chỉ định đích danh nhân vật cụ thể trong nội dung prompt không
                         final lowerPrompt = message.toLowerCase();
                         final profilesMap = await _personaService.loadSavedPersonas();
-                        bool userExplicitlyPickedSingle = false;
-                        for (final scopeIp in allowedScopeIps) {
-                          final p = profilesMap[scopeIp];
+                        final explicitlyNamedKeys = <String>[];
+                        for (final scopeKey in allowedScopeIps) {
+                          final p = profilesMap[scopeKey];
                           if (p != null) {
                             final pName = p.name.trim().toLowerCase();
-                            if (pName.isNotEmpty && (lowerPrompt.contains(pName) || lowerPrompt.contains(p.ip))) {
-                              userExplicitlyPickedSingle = true;
-                              break;
+                            if ((pName.isNotEmpty && lowerPrompt.contains(pName)) ||
+                                lowerPrompt.contains(scopeKey.toLowerCase())) {
+                              explicitlyNamedKeys.add(scopeKey);
                             }
                           }
                         }
 
-                        if (!userExplicitlyPickedSingle) {
+                        if (explicitlyNamedKeys.isEmpty) {
                           // Người dùng không nêu đích danh 1 ai -> MẶC ĐỊNH áp dụng cho TẤT CẢ nhân vật trong Scope!
                           targetIps.clear();
                           targetIps.addAll(allowedScopeIps);
                         } else {
-                          // Người dùng có nêu đích danh -> Lọc bỏ bất kỳ IP nào không nằm trong danh sách Scope
-                          targetIps.retainWhere((ip) => allowedScopeIps.contains(ip));
+                          // Người dùng có nêu đích danh -> Giữ các khóa hợp lệ hoặc dùng đúng nhân vật được gọi tên
+                          targetIps.retainWhere((k) => allowedScopeIps.contains(k));
                           if (targetIps.isEmpty) {
-                            targetIps.addAll(allowedScopeIps);
+                            targetIps.addAll(explicitlyNamedKeys);
                           }
                         }
                       }
@@ -840,35 +858,35 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                     // Scope enforcement
                     if (allowedScopeIps.isNotEmpty) {
                       if (allowedScopeIps.length == 1) {
-                        // Scope chỉ có 1 nhân vật -> ÉP BUỘC chỉ mở duy nhất 1 thiết bị cho IP đó!
+                        // Scope chỉ có 1 nhân vật -> ÉP BUỘC chỉ mở duy nhất 1 thiết bị cho nhân vật đó!
                         targetDevIps.clear();
                         targetDevIps.add(allowedScopeIps.first);
                       } else {
                         // Scope có nhiều nhân vật
-                        // Kiểm tra xem người dùng có chỉ định đích danh 1 nhân vật trong prompt không
+                        // Kiểm tra xem người dùng có chỉ định đích danh nhân vật cụ thể trong prompt không
                         final lowerPrompt = message.toLowerCase();
                         final profilesMap = await _personaService.loadSavedPersonas();
-                        bool userExplicitlyPickedSingle = false;
-                        for (final scopeIp in allowedScopeIps) {
-                          final p = profilesMap[scopeIp];
+                        final explicitlyNamedKeys = <String>[];
+                        for (final scopeKey in allowedScopeIps) {
+                          final p = profilesMap[scopeKey];
                           if (p != null) {
                             final pName = p.name.trim().toLowerCase();
-                            if (pName.isNotEmpty && (lowerPrompt.contains(pName) || lowerPrompt.contains(p.ip))) {
-                              userExplicitlyPickedSingle = true;
-                              break;
+                            if ((pName.isNotEmpty && lowerPrompt.contains(pName)) ||
+                                lowerPrompt.contains(scopeKey.toLowerCase())) {
+                              explicitlyNamedKeys.add(scopeKey);
                             }
                           }
                         }
 
-                        if (!userExplicitlyPickedSingle) {
+                        if (explicitlyNamedKeys.isEmpty) {
                           // Người dùng không nêu đích danh -> Áp dụng cho TẤT CẢ nhân vật trong Scope
                           targetDevIps.clear();
                           targetDevIps.addAll(allowedScopeIps);
                         } else {
-                          // Người dùng có nêu đích danh -> Lọc bỏ bất kỳ IP nào ngoài Scope
-                          targetDevIps.retainWhere((ip) => allowedScopeIps.contains(ip));
+                          // Người dùng có nêu đích danh -> Giữ khóa hợp lệ hoặc dùng đúng nhân vật được gọi tên
+                          targetDevIps.retainWhere((k) => allowedScopeIps.contains(k));
                           if (targetDevIps.isEmpty) {
-                            targetDevIps.addAll(allowedScopeIps);
+                            targetDevIps.addAll(explicitlyNamedKeys);
                           }
                         }
                       }

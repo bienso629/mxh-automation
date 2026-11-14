@@ -304,4 +304,22 @@ class BrowserProfileService {
     }
     return null;
   }
+
+  /// Trả về đường dẫn thư mục dữ liệu thực tế của profile trình duyệt hệ thống
+  String? resolveSystemProfileDirectory(String executable, String profileId) {
+    final cleanId = profileId.trim();
+    if (executable.trim().isEmpty || cleanId.isEmpty) return null;
+    final resolved = resolveProfile(executable, cleanId);
+    if (resolved?.path != null && resolved!.path!.isNotEmpty) {
+      return resolved.path;
+    }
+    if (detectKindFromExecutable(executable) == BrowserKind.chromium) {
+      final userDataDir = _chromiumUserDataDir(executable);
+      if (userDataDir != null && userDataDir.isNotEmpty) {
+        final sep = Platform.isWindows ? r'\' : '/';
+        return '$userDataDir$sep$cleanId';
+      }
+    }
+    return null;
+  }
 }

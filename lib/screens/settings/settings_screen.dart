@@ -1863,13 +1863,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final safeServerName = server.name.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
       final fileName = 'server_backup_${safeServerName}_${DateTime.now().millisecondsSinceEpoch}.json';
 
-      // Thu thập thông tin personas tương ứng với danh sách IP của server này
+      // Thu thập thông tin personas tương ứng với danh sách IP của server này (gồm cả nhân vật gốc và nhân vật phụ ip##n)
       final serverPersonasMap = <String, dynamic>{};
-      for (final ip in ips) {
-        if (allPersonas.containsKey(ip)) {
-          serverPersonasMap[ip] = allPersonas[ip]!.toJson();
+      final ipSet = ips.toSet();
+      allPersonas.forEach((key, persona) {
+        if (ipSet.contains(persona.ip) || ipSet.contains(key)) {
+          serverPersonasMap[key] = persona.toJson();
         }
-      }
+      });
 
       final payload = {
         'version': 1,
@@ -1961,9 +1962,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (decoded['personas'] is Map<String, dynamic>) {
         final personasMap = decoded['personas'] as Map<String, dynamic>;
         final personasToSave = <String, PersonaProfile>{};
-        personasMap.forEach((ip, val) {
+        personasMap.forEach((key, val) {
           if (val is Map<String, dynamic>) {
-            personasToSave[ip] = PersonaProfile.fromJson(val);
+            final parsed = PersonaProfile.fromJson(val);
+            final hasExplicitKey =
+                val['entry_key'] != null && val['entry_key'].toString().trim().isNotEmpty;
+            final p = hasExplicitKey ? parsed : parsed.copyWith(entryKey: key);
+            personasToSave[p.effectiveEntryKey] = p;
           }
         });
         if (personasToSave.isNotEmpty) {

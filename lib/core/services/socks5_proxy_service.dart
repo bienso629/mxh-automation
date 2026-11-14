@@ -7,6 +7,7 @@ import 'package:archive/archive.dart';
 import 'package:dartssh2/dartssh2.dart';
 import '../../models/server_model.dart';
 import 'adb_manager_service.dart';
+import 'browser_profile_service.dart';
 import 'emulator_manager_service.dart';
 import 'ldplayer_adb_discovery.dart';
 import 'local_config_service.dart';
@@ -78,6 +79,11 @@ class Socks5Session {
   String? adbDeviceSerial;
   int? ldPlayerIndex;
   int? adbReversePort;
+  String? browserProfileId;
+  String? browserExecutable;
+  String? systemBrowserProfileDir;
+  bool browserDelegatedToExistingInstance = false;
+  bool isDeviceBooting = false;
   DateTime createdAt = DateTime.now();
   DateTime? browserLaunchedAt;
   DateTime? deviceLaunchedAt;
@@ -95,7 +101,22 @@ class Socks5Session {
     this.adbDeviceSerial,
     this.ldPlayerIndex,
     this.adbReversePort,
+    this.browserProfileId,
+    this.browserExecutable,
+    this.systemBrowserProfileDir,
   });
+
+  bool get hasActiveBrowserState =>
+      browserProcess != null ||
+      browserDelegatedToExistingInstance ||
+      browserLaunchedAt != null;
+
+  bool get hasActiveDeviceState =>
+      deviceProcess != null ||
+      isDeviceBooting ||
+      (remoteDeviceAddress != null && remoteDeviceAddress!.isNotEmpty) ||
+      (adbDeviceSerial != null && adbDeviceSerial!.isNotEmpty) ||
+      emulatorPort != null;
 
   Future<void> stop() async {
     try {
@@ -136,16 +157,20 @@ class Socks5ProxyService extends ChangeNotifier {
   Timer? _watchdogTimer;
 
   Socks5ProxyService._internal() {
+    // Dọn dẹp lock file rác từ lần tắt máy trước rồi đồng bộ ngay trạng thái thực tế
+    repairBrowserProfilesAndEnvironment()
+        .catchError((_) => <String, dynamic>{})
+        .whenComplete(() {
+      unawaited(refreshRuntimeStates());
+    });
     _startWatchdog();
-    // Tự động kiểm tra và dọn dẹp các lock file rác, tiến trình zombie khi khởi chạy app
-    repairBrowserProfilesAndEnvironment().catchError((_) => <String, dynamic>{});
   }
 
   void _startWatchdog() {
     _watchdogTimer?.cancel();
-    // Quét định kỳ mỗi 1.5 giây để phát hiện ngay khi trình duyệt bị tắt bằng tay (tắt cứng)
-    _watchdogTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
-      _checkTerminatedBrowsers();
+    // Đồng bộ bất đồng bộ mỗi 1.8 giây (không chặn UI thread) cho cả Browser lẫn LDPlayer / ADB / AVD
+    _watchdogTimer = Timer.periodic(const Duration(milliseconds: 1800), (_) {
+      unawaited(refreshRuntimeStates());
     });
   }
 
@@ -153,9 +178,36 @@ class Socks5ProxyService extends ChangeNotifier {
   static bool isAdbConnectedId(String? avdId) => LdPlayerAdbParser.isAdbConnectedId(avdId);
   static bool isExternalEmulatorId(String? avdId) => LdPlayerAdbParser.isExternalEmulatorId(avdId);
 
+  /// Chuẩn hóa khóa định danh phiên theo từng nhân vật (`ip` cho nhân vật gốc, `ip##n` cho nhân vật phụ)
+  static String normalizeTrackKey(String ip, {String? entryKey}) {
+    if (entryKey != null && entryKey.trim().isNotEmpty) {
+      return entryKey.trim();
+    }
+    return ip.trim();
+  }
+
+  /// Trích xuất IP thuần từ khóa có thể chứa hậu tố `##n`
+  static String extractCleanIp(String ipOrKey) {
+    final clean = ipOrKey.trim();
+    return clean.contains('##') ? clean.split('##').first.trim() : clean;
+  }
+
+  static String _isolatedProfileDirName(String cleanIp, String trackKey) {
+    final isRootKey = trackKey == cleanIp;
+    return isRootKey
+        ? 'ip_${cleanIp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}'
+        : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
+  }
+
   final Map<String, VirtualDeviceOption> _virtualDeviceCatalog = {};
-  bool _isCheckingAdbLiveness = false;
-  DateTime _lastAdbLivenessCheck = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _isSyncingRuntime = false;
+  bool _pendingResync = false;
+
+  final Map<String, Socks5Session> _activeSessions = {};
+  final Set<String> _closingBrowserIps = {};
+  final Set<String> _closingDeviceIps = {};
+  final Set<String> _manuallyDetachedDeviceKeys = {};
+  final Set<String> _manuallyDetachedBrowserKeys = {};
 
   /// Trả về tên hiển thị thân thiện của máy ảo / giả lập LDPlayer / thiết bị ADB
   String getVirtualDeviceDisplayLabel(String avdId) {
@@ -165,342 +217,788 @@ class Socks5ProxyService extends ChangeNotifier {
     return LdPlayerAdbParser.fallbackDisplayLabelForId(clean);
   }
 
-  /// Kiểm tra các session đang ghi nhận, dọn dẹp khi tiến trình tắt và tự động phát hiện thiết bị đang chạy ngoài OS
-  void _checkTerminatedBrowsers() {
-    final now = DateTime.now();
-    bool stateChanged = false;
-
-    // Kiểm tra định kỳ (mỗi 6 giây, bất đồng bộ không chặn UI) xem giả lập LDPlayer / ADB còn online không
-    final hasAdbAttached = _activeSessions.values.any(
-      (s) => s.adbDeviceSerial != null && s.adbDeviceSerial!.isNotEmpty,
-    );
-    if (hasAdbAttached &&
-        !_isCheckingAdbLiveness &&
-        now.difference(_lastAdbLivenessCheck) >= const Duration(seconds: 6)) {
-      _lastAdbLivenessCheck = now;
-      unawaited(_refreshAdbAttachedSessionsLiveness());
-    }
-
-    // 1. Dọn dẹp session đã kết thúc
-    if (_activeSessions.isNotEmpty) {
-      final deadKeys = <String>[];
-      for (final entry in _activeSessions.entries) {
-        final sessionKey = entry.key;
-        final session = entry.value;
-
-        // Thời gian ân hạn 10 giây sau khi tạo session hoặc vừa mở trình duyệt / thiết bị
-        final timeSinceCreated = now.difference(session.createdAt);
-        if (timeSinceCreated < const Duration(seconds: 10)) {
-          continue;
-        }
-        if (session.browserLaunchedAt != null &&
-            now.difference(session.browserLaunchedAt!) < const Duration(seconds: 10)) {
-          continue;
-        }
-        if (session.deviceLaunchedAt != null &&
-            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 10)) {
-          continue;
-        }
-
-        // Nếu đây là session gốc giữ hầm SSH SOCKS5 cho IP và vẫn còn sub-profile (ip##n) đang dùng thì giữ nguyên
-        final isRootKey = sessionKey == session.ip;
-        if (isRootKey) {
-          final hasActiveChild = _activeSessions.keys.any(
-            (k) =>
-                k.startsWith('${session.ip}##') &&
-                (_isSystemProcessAliveForIp(session.ip, entryKey: k) ||
-                    _isDeviceProcessAliveForIp(session.ip, entryKey: k)),
-          );
-          if (hasActiveChild) {
-            continue;
-          }
-        }
-
-        // Kiểm tra thực tế trên hệ thống xem profile này còn tiến trình trình duyệt hoặc device nào không
-        if (!_isSystemProcessAliveForIp(session.ip, entryKey: sessionKey) &&
-            !_isDeviceProcessAliveForIp(session.ip, entryKey: sessionKey)) {
-          deadKeys.add(sessionKey);
-        }
-      }
-
-      if (deadKeys.isNotEmpty) {
-        for (final key in deadKeys) {
-          final session = _activeSessions.remove(key);
-          session?.stop();
-        }
-        stateChanged = true;
-      }
-    }
-
-    // 2. Tự động quét và phát hiện các mobile device / emulator đang chạy trên OS (kể cả do CLI mxh-tool mở hoặc app vừa khởi động lại)
-    try {
-      final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
-      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
-      if (tmpDir.existsSync()) {
-        for (final f in tmpDir.listSync(followLinks: false)) {
-          if (f is File && f.path.contains('device_') && f.path.endsWith('.json')) {
-            try {
-              final content = f.readAsStringSync();
-              final meta = json.decode(content);
-              final ip = meta['ip']?.toString();
-              final entryKey = meta['entry_key']?.toString();
-              final trackKey = (entryKey != null && entryKey.isNotEmpty) ? entryKey : ip;
-              final emuPid = meta['emulator_pid'];
-              final cport = meta['console_port'];
-              if (ip != null && ip.isNotEmpty && trackKey != null && emuPid != null && emuPid is int) {
-                final isAlive = File('/proc/$emuPid/cmdline').existsSync() || Process.killPid(emuPid, ProcessSignal.sigcont);
-                if (isAlive) {
-                  if (!_activeSessions.containsKey(trackKey)) {
-                    final newSession = Socks5Session(
-                      localPort: 0,
-                      ip: ip,
-                    );
-                    if (cport != null) {
-                      newSession.emulatorPort = int.tryParse(cport.toString());
-                    }
-                    _activeSessions[trackKey] = newSession;
-                    stateChanged = true;
-                  } else {
-                    final exist = _activeSessions[trackKey]!;
-                    if (exist.emulatorPort == null && cport != null) {
-                      exist.emulatorPort = int.tryParse(cport.toString());
-                      stateChanged = true;
-                    }
-                  }
-                } else {
-                  // Tiến trình không còn tồn tại, xóa file metadata rác
-                  try {
-                    f.deleteSync();
-                  } catch (_) {}
-                }
-              }
-            } catch (_) {}
-          }
-        }
-      }
-    } catch (_) {}
-
-    if (stateChanged) {
-      notifyListeners();
-    }
+  bool isClosingBrowser(String ip, {String? entryKey}) {
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    return _closingBrowserIps.contains(trackKey);
   }
 
-  /// Kiểm tra bất đồng bộ xem các giả lập LDPlayer / ADB đang gắn vào session có bị người dùng đóng thủ công ngoài màn hình hay không
-  Future<void> _refreshAdbAttachedSessionsLiveness() async {
-    if (_isCheckingAdbLiveness) return;
-    _isCheckingAdbLiveness = true;
+  bool isClosingDevice(String ip, {String? entryKey}) {
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    return _closingDeviceIps.contains(trackKey);
+  }
+
+  /// Kiểm tra trên Windows xem file có đang bị tiến trình trình duyệt khóa ghi (Sharing Violation) hay không
+  static bool _isWindowsFileExclusivelyLocked(File file) {
+    if (!Platform.isWindows) return false;
+    if (!file.existsSync()) return false;
+    RandomAccessFile? raf;
     try {
-      final adbBin = await _findAdbExecutable();
-      final res = await Process.run(adbBin, ['devices', '-l']).timeout(const Duration(seconds: 3));
-      if (res.exitCode != 0) return;
-
-      final onlineRecords = LdPlayerAdbParser.parseAdbDevicesLongOutput(res.stdout.toString());
-      final now = DateTime.now();
-      bool changed = false;
-
-      for (final entry in _activeSessions.entries.toList()) {
-        final sessionKey = entry.key;
-        final session = entry.value;
-        final boundSerial = session.adbDeviceSerial;
-        if (boundSerial == null || boundSerial.isEmpty) continue;
-
-        if (session.deviceLaunchedAt != null &&
-            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 15)) {
-          continue;
-        }
-
-        final stillOnline = onlineRecords.any((r) => r.matchesSerial(boundSerial));
-        if (!stillOnline) {
-          session.adbDeviceSerial = null;
-          session.ldPlayerIndex = null;
-          session.adbReversePort = null;
-          try {
-            await session.httpBridgeServer?.close();
-          } catch (_) {}
-          session.httpBridgeServer = null;
-
-          // Xóa file metadata tạm nếu có
-          try {
-            final sanitizedKey = sessionKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-            final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
-            final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedKey.json'));
-            if (metaFile.existsSync()) metaFile.deleteSync();
-          } catch (_) {}
-
-          changed = true;
-        }
-      }
-
-      if (changed) {
-        notifyListeners();
-      }
+      raf = file.openSync(mode: FileMode.append);
+      return false;
+    } on FileSystemException {
+      return true;
     } catch (_) {
+      return false;
     } finally {
-      _isCheckingAdbLiveness = false;
+      try {
+        raf?.closeSync();
+      } catch (_) {}
     }
   }
 
-  final Map<String, Socks5Session> _activeSessions = {};
-  final Set<String> _closingDeviceIps = {};
-
-  bool isIpRunning(String ip) => _activeSessions.containsKey(ip);
-
-  Socks5Session? getSession(String ip) => _activeSessions[ip];
-
-  /// Quét xem trên hệ thống OS có tiến trình trình duyệt nào đang chạy profile của IP này không
-  bool _isSystemProcessAliveForIp(String ip, {String? entryKey}) {
-    // Khóa track: ưu tiên entryKey của nhân vật, fallback về IP cho luồng cũ
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
-        ? entryKey.trim()
-        : ip;
-    final isRootKey = trackKey == ip;
-    final dirName = isRootKey
-        ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}'
-        : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
+  /// Kiểm tra nhanh tiến trình theo PID trên mọi hệ điều hành
+  static bool _isPidAliveCrossPlatform(int targetPid) {
+    if (targetPid <= 0) return false;
+    if (Platform.isLinux) {
+      return Directory('/proc/$targetPid').existsSync();
+    }
     try {
-      final session = _activeSessions[trackKey];
-      // Nếu có đối tượng Process đang giữ và chưa thoát
-      if (session != null && session.browserProcess != null) {
-        return true;
-      }
-
-      // Trên Windows:
       if (Platform.isWindows) {
-        if (session != null && session.browserLaunchedAt != null) {
-          // Trong 5 giây đầu sau khi mở, giữ trạng thái là true để trình duyệt kịp khởi động
-          final elapsed = DateTime.now().difference(session.browserLaunchedAt!);
-          if (elapsed.inSeconds < 5) {
-            return true;
-          }
-          // Sau 5 giây, kiểm tra thực tế xem profile lock có còn tồn tại không
-          final homeDir = Platform.environment['USERPROFILE'] ??
-              Platform.environment['HOME'] ??
-              Directory.systemTemp.path;
-          final lockFile = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName, 'lockfile'));
-          final singletonLock = File(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName, 'SingletonLock'));
-          if (lockFile.existsSync() || singletonLock.existsSync()) {
-            return true;
-          }
-          // Nếu cả lock file đều không còn, trình duyệt đã bị đóng
-          session.browserLaunchedAt = null;
-          return false;
+        final res = Process.runSync(
+          'tasklist',
+          ['/FI', 'PID eq $targetPid', '/NH'],
+          stdoutEncoding: null,
+          stderrEncoding: null,
+        );
+        if (res.exitCode == 0 && res.stdout is List<int>) {
+          final out = utf8.decode(res.stdout as List<int>, allowMalformed: true);
+          return RegExp('\\b$targetPid\\b').hasMatch(out);
         }
+        return false;
       }
-
-      final needle = 'browser_profiles/$dirName';
-
-      if (Platform.isLinux) {
-        final procDir = Directory('/proc');
-        if (procDir.existsSync()) {
-          final myPid = pid;
-          for (final entity in procDir.listSync(followLinks: false)) {
-            final baseName = entity.path.split('/').last;
-            final p = int.tryParse(baseName);
-            if (p == null || p == myPid) continue;
-            try {
-              final cmdFile = File('${entity.path}/cmdline');
-              if (cmdFile.existsSync()) {
-                final bytes = cmdFile.readAsBytesSync();
-                final cmd = String.fromCharCodes(bytes);
-                if (cmd.contains(needle) && !cmd.contains('device_profiles') && !cmd.contains('python') && !cmd.contains('pgrep')) {
-                  return true;
-                }
-              }
-            } catch (_) {}
-          }
-        }
-      }
-    } catch (_) {}
-    return false;
+      return Process.killPid(targetPid, ProcessSignal.sigcont);
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// Quét xem trên hệ thống OS có tiến trình mobile device nào đang chạy cho IP / nhân vật này không
-  bool _isDeviceProcessAliveForIp(String ip, {String? entryKey}) {
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
-        ? entryKey.trim()
-        : ip;
-    try {
-      final session = _activeSessions[trackKey];
-      if (session != null && session.deviceProcess != null) {
-        return true;
-      }
-      if (session?.remoteDeviceAddress != null) {
-        return true;
-      }
-      if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
-        return true;
-      }
-      if (Platform.isWindows) {
-        if (session != null && session.emulatorPort != null) {
-          return true;
-        }
-      }
+  /// Kiểm tra xem thư mục profile trình duyệt cô lập (`--user-data-dir`) có thực sự đang được mở bởi trình duyệt hay không
+  bool _isIsolatedProfileDirLocked(Directory profileDir, {Set<String>? linuxProcCmdlines}) {
+    if (!profileDir.existsSync()) return false;
 
-      final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final isRootKey = trackKey == ip;
+    if (Platform.isWindows) {
+      final lockFile = File(p.join(profileDir.path, 'lockfile'));
+      if (_isWindowsFileExclusivelyLocked(lockFile)) return true;
+      final ffLock = File(p.join(profileDir.path, 'parent.lock'));
+      if (_isWindowsFileExclusivelyLocked(ffLock)) return true;
+      return false;
+    }
 
-      // 1. Kiểm tra file metadata device_<trackKey>.json do CLI mxh-tool hoặc app tạo ra
+    if (Platform.isLinux) {
+      // 1. Kiểm tra trực tiếp symlink SingletonLock -> <hostname>-<pid> (nhanh < 0.05ms, phân biệt được lock rác)
       try {
-        final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
-        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedTrackKey.json'));
-        if (metaFile.existsSync()) {
-          final content = metaFile.readAsStringSync();
-          final meta = json.decode(content);
-          final emuPid = meta['emulator_pid'];
-          if (emuPid != null && emuPid is int) {
-            if (File('/proc/$emuPid/cmdline').existsSync() || Process.killPid(emuPid, ProcessSignal.sigcont)) {
+        final singletonPath = p.join(profileDir.path, 'SingletonLock');
+        final type = FileSystemEntity.typeSync(singletonPath, followLinks: false);
+        if (type == FileSystemEntityType.link) {
+          final target = Link(singletonPath).targetSync();
+          final dashIdx = target.lastIndexOf('-');
+          if (dashIdx > 0) {
+            final lockPid = int.tryParse(target.substring(dashIdx + 1).trim());
+            if (lockPid != null && Directory('/proc/$lockPid').existsSync()) {
               return true;
             }
           }
         }
       } catch (_) {}
 
-      final port = session?.emulatorPort;
-      final needleProfile = 'device_profiles/ip_$sanitizedTrackKey';
-      final needlePersonaAvd = 'persona_$sanitizedTrackKey';
-      final needlePort = port != null ? '-port\x00$port' : null;
+      // 2. Đối chiếu với danh sách cmdline trong /proc (nếu đã quét sẵn)
+      final dirName = p.basename(profileDir.path);
+      final needle = 'browser_profiles/$dirName';
+      if (linuxProcCmdlines != null) {
+        return linuxProcCmdlines.any((cmd) => cmd.contains(needle));
+      }
+    }
 
-      if (Platform.isLinux) {
-        final procDir = Directory('/proc');
-        if (procDir.existsSync()) {
-          final myPid = pid;
-          for (final entity in procDir.listSync(followLinks: false)) {
-            final baseName = entity.path.split('/').last;
-            final p = int.tryParse(baseName);
-            if (p == null || p == myPid) continue;
-            try {
-              final cmdFile = File('${entity.path}/cmdline');
-              if (cmdFile.existsSync()) {
-                final bytes = cmdFile.readAsBytesSync();
-                final cmd = String.fromCharCodes(bytes);
-                final matchesProfile = isRootKey && (cmd.contains(needleProfile) || cmd.contains(needlePersonaAvd));
-                final matchesPort = needlePort != null && cmd.contains(needlePort);
-                if ((matchesProfile || matchesPort) && !cmd.contains('python') && !cmd.contains('pgrep')) {
+    return false;
+  }
+
+  bool _isIsolatedBrowserProfileAliveForKey(
+    String ip, {
+    String? trackKey,
+    Set<String>? linuxProcCmdlines,
+  }) {
+    final effectiveKey = normalizeTrackKey(ip, entryKey: trackKey);
+    final cleanIp = extractCleanIp(effectiveKey);
+    final dirName = _isolatedProfileDirName(cleanIp, effectiveKey);
+    final profileDir = Directory(p.join(getBrowserProfilesDirectory().path, dirName));
+    return _isIsolatedProfileDirLocked(profileDir, linuxProcCmdlines: linuxProcCmdlines);
+  }
+
+  /// Kiểm tra xem một Profile trình duyệt hệ thống (`Default`, `Profile 1`, ...) có đang mở cửa sổ hoạt động hay không
+  bool _isSystemProfileDirActive(
+    String? systemProfileDir,
+    String? executable,
+    String? profileId,
+  ) {
+    if (systemProfileDir == null || systemProfileDir.trim().isEmpty) {
+      return false;
+    }
+    final dir = Directory(systemProfileDir);
+    if (!dir.existsSync()) return false;
+
+    final isFirefox = (executable ?? '').toLowerCase().contains('firefox');
+
+    if (Platform.isWindows) {
+      if (isFirefox) {
+        return _isWindowsFileExclusivelyLocked(File(p.join(dir.path, 'parent.lock')));
+      }
+      // Chromium giữ write-lock độc quyền trên các file Sessions\Session_* và Tabs_* suốt thời gian cửa sổ profile mở.
+      // Ngay khi đóng cửa sổ cuối cùng của profile đó (DestroyProfileOnBrowserClose), Chrome nhả handle ngay lập tức.
+      final sessionsDir = Directory(p.join(dir.path, 'Sessions'));
+      if (sessionsDir.existsSync()) {
+        try {
+          bool hasSessionFiles = false;
+          for (final ent in sessionsDir.listSync(followLinks: false)) {
+            if (ent is File) {
+              final name = p.basename(ent.path);
+              if (name.startsWith('Session_') || name.startsWith('Tabs_')) {
+                hasSessionFiles = true;
+                if (_isWindowsFileExclusivelyLocked(ent)) {
                   return true;
                 }
               }
-            } catch (_) {}
+            }
           }
+          if (hasSessionFiles) {
+            return false;
+          }
+        } catch (_) {}
+      }
+      // Dự phòng cho profile mới tinh trong vài giây đầu chưa kịp tạo thư mục Sessions
+      return _isWindowsFileExclusivelyLocked(
+        File(p.join(dir.path, 'Local Storage', 'leveldb', 'LOCK')),
+      );
+    }
+
+    if (Platform.isLinux) {
+      try {
+        final normDir = p.normalize(dir.path);
+        final procDir = Directory('/proc');
+        if (!procDir.existsSync()) return false;
+        final myPid = pid;
+        for (final entity in procDir.listSync(followLinks: false)) {
+          final procPid = int.tryParse(p.basename(entity.path));
+          if (procPid == null || procPid == myPid) continue;
+          try {
+            final commFile = File('${entity.path}/comm');
+            if (!commFile.existsSync()) continue;
+            final comm = commFile.readAsStringSync().trim().toLowerCase();
+            final isBrowserProc = comm.contains('chrome') ||
+                comm.contains('chromium') ||
+                comm.contains('msedge') ||
+                comm.contains('brave') ||
+                comm.contains('vivaldi') ||
+                comm.contains('opera') ||
+                comm.contains('coccoc') ||
+                comm.contains('firefox');
+            if (!isBrowserProc) continue;
+
+            final fdDir = Directory('${entity.path}/fd');
+            if (!fdDir.existsSync()) continue;
+            for (final fdEnt in fdDir.listSync(followLinks: false)) {
+              try {
+                final target = Link(fdEnt.path).targetSync();
+                if (isFirefox) {
+                  if (target.startsWith(normDir) &&
+                      (target.endsWith('.parentlock') || target.endsWith('/lock'))) {
+                    return true;
+                  }
+                } else {
+                  if (target.startsWith('$normDir/Sessions/Session_') ||
+                      target.startsWith('$normDir/Sessions/Tabs_')) {
+                    return true;
+                  }
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    return false;
+  }
+
+  /// Kiểm tra xem có profile hệ thống nào KHÁC `excludeProfileId` đang mở cửa sổ trong cùng trình duyệt Chromium không
+  bool _hasOtherActiveChromiumSystemProfiles(String? executable, String? excludeProfileId) {
+    if (executable == null || executable.trim().isEmpty) return false;
+    if (executable.toLowerCase().contains('firefox')) return false;
+    try {
+      final profiles = BrowserProfileService().listChromiumProfiles(executable);
+      for (final info in profiles) {
+        if (excludeProfileId != null && info.id == excludeProfileId.trim()) {
+          continue;
+        }
+        if (_isSystemProfileDirActive(info.path, executable, info.id)) {
+          return true;
         }
       }
     } catch (_) {}
     return false;
   }
 
+  /// Quét danh sách cmdline các tiến trình trình duyệt/emulator trên Linux (chỉ gọi trong tác vụ nền bất đồng bộ)
+  Set<String> _collectLinuxRelevantCmdlines() {
+    final result = <String>{};
+    if (!Platform.isLinux) return result;
+    try {
+      final procDir = Directory('/proc');
+      if (!procDir.existsSync()) return result;
+      final myPid = pid;
+      for (final entity in procDir.listSync(followLinks: false)) {
+        final procPid = int.tryParse(p.basename(entity.path));
+        if (procPid == null || procPid == myPid) continue;
+        try {
+          final cmdFile = File('${entity.path}/cmdline');
+          if (!cmdFile.existsSync()) continue;
+          final bytes = cmdFile.readAsBytesSync();
+          if (bytes.isEmpty) continue;
+          final cmd = String.fromCharCodes(bytes);
+          if ((cmd.contains('browser_profiles/') ||
+                  cmd.contains('device_profiles/') ||
+                  cmd.contains('persona_') ||
+                  cmd.contains('-avd')) &&
+              !cmd.contains('python') &&
+              !cmd.contains('pgrep') &&
+              !cmd.contains('pkill')) {
+            result.add(cmd);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return result;
+  }
+
+  /// Đồng bộ toàn diện trạng thái thực tế của Trình duyệt & Thiết bị (LDPlayer / ADB Android Studio / AVD / Ngoại vi).
+  /// Chạy hoàn toàn bất đồng bộ, cập nhật tức thì cả hai chiều Mở và Đóng mà không gây giật lag giao diện.
+  Future<void> refreshRuntimeStates() async {
+    if (_isSyncingRuntime) {
+      _pendingResync = true;
+      return;
+    }
+    _isSyncingRuntime = true;
+
+    try {
+      do {
+        _pendingResync = false;
+        await _performSingleRuntimeSyncPass();
+      } while (_pendingResync);
+    } finally {
+      _isSyncingRuntime = false;
+    }
+  }
+
+  Future<void> _performSingleRuntimeSyncPass() async {
+    final now = DateTime.now();
+    bool stateChanged = false;
+
+    final linuxCmdlines = Platform.isLinux ? _collectLinuxRelevantCmdlines() : null;
+    final allPersonas = PersonaService().allPersonas;
+
+    // =========================================================================
+    // PHẦN 1: ĐỒNG BỘ TRẠNG THÁI TRÌNH DUYỆT (BROWSER)
+    // =========================================================================
+    for (final entry in _activeSessions.entries.toList()) {
+      final sessionKey = entry.key;
+      final session = entry.value;
+      if (_closingBrowserIps.contains(sessionKey)) continue;
+      if (!session.hasActiveBrowserState) continue;
+
+      // Nếu đối tượng Process trực tiếp vẫn còn sống (chưa bắn sự kiện exitCode) thì trình duyệt chắc chắn đang mở
+      if (session.browserProcess != null) {
+        continue;
+      }
+
+      // Khoảng đệm ngắn 3 giây đầu khi trình duyệt đang khởi tạo khóa profile trên ổ đĩa
+      if (session.browserLaunchedAt != null &&
+          now.difference(session.browserLaunchedAt!) < const Duration(milliseconds: 3000)) {
+        continue;
+      }
+
+      bool stillAlive = false;
+      if (session.browserProfileId != null && session.browserProfileId!.isNotEmpty) {
+        stillAlive = _isSystemProfileDirActive(
+          session.systemBrowserProfileDir,
+          session.browserExecutable,
+          session.browserProfileId,
+        );
+      } else {
+        stillAlive = _isIsolatedBrowserProfileAliveForKey(
+          session.ip,
+          trackKey: sessionKey,
+          linuxProcCmdlines: linuxCmdlines,
+        );
+      }
+
+      if (!stillAlive) {
+        session.browserLaunchedAt = null;
+        session.browserDelegatedToExistingInstance = false;
+        session.browserProfileId = null;
+        session.systemBrowserProfileDir = null;
+        stateChanged = true;
+      }
+    }
+
+    // Tự động nhận diện các trình duyệt cô lập đang mở sẵn (ví dụ sau khi F5 / khởi động lại ứng dụng)
+    for (final persona in allPersonas.values) {
+      final trackKey = persona.effectiveEntryKey;
+      final cleanIp = persona.ip;
+      if (_closingBrowserIps.contains(trackKey)) continue;
+
+      final useSysProfile =
+          persona.browserProfileId != null && persona.browserProfileId!.trim().isNotEmpty;
+      if (useSysProfile) {
+        if (_manuallyDetachedBrowserKeys.contains(trackKey)) {
+          final exe = findBrowserExecutable();
+          final sysDir = exe != null
+              ? BrowserProfileService()
+                  .resolveSystemProfileDirectory(exe, persona.browserProfileId!)
+              : null;
+          if (!_isSystemProfileDirActive(sysDir, exe, persona.browserProfileId)) {
+            _manuallyDetachedBrowserKeys.remove(trackKey);
+          }
+        }
+        continue;
+      }
+
+      if (_activeSessions[trackKey]?.hasActiveBrowserState == true) continue;
+      if (_isIsolatedBrowserProfileAliveForKey(
+        cleanIp,
+        trackKey: trackKey,
+        linuxProcCmdlines: linuxCmdlines,
+      )) {
+        final session = _activeSessions[trackKey] ??
+            Socks5Session(localPort: 0, ip: cleanIp);
+        session.browserLaunchedAt = now;
+        _activeSessions[trackKey] = session;
+        stateChanged = true;
+      }
+    }
+
+    // =========================================================================
+    // PHẦN 2: ĐỒNG BỘ TRẠNG THÁI DEVICE (LDPLAYER / ANDROID STUDIO ADB / AVD)
+    // =========================================================================
+    final hasActiveDeviceSession =
+        _activeSessions.values.any((s) => s.hasActiveDeviceState);
+    final hasExternalBoundPersonas = allPersonas.values
+        .any((p) => LdPlayerAdbParser.isExternalEmulatorId(p.avdName));
+    final homeDir = Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        Directory.systemTemp.path;
+    final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
+    final hasTmpDeviceMeta = tmpDir.existsSync();
+
+    List<AdbDeviceRecord> onlineAdbRecords = const [];
+    bool adbQuerySucceeded = false;
+    Map<int, LdPlayerInstance>? ldByIndex;
+
+    if (hasActiveDeviceSession || hasExternalBoundPersonas || hasTmpDeviceMeta) {
+      final adbBin = await _findExistingAdbForDiscovery();
+      if (adbBin != null) {
+        try {
+          final res = await Process.run(
+            adbBin,
+            ['devices', '-l'],
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          ).timeout(const Duration(seconds: 2));
+          if (res.exitCode == 0) {
+            final rawOut = res.stdout is List<int>
+                ? utf8.decode(res.stdout as List<int>, allowMalformed: true)
+                : res.stdout.toString();
+            onlineAdbRecords = LdPlayerAdbParser.parseAdbDevicesLongOutput(rawOut);
+            adbQuerySucceeded = true;
+          }
+        } catch (_) {}
+      }
+
+      if (Platform.isWindows &&
+          (hasExternalBoundPersonas ||
+              _activeSessions.values.any((s) => s.ldPlayerIndex != null))) {
+        try {
+          final ldList = await LdPlayerService().queryLiveInstancesFromConsole();
+          if (ldList != null && ldList.isNotEmpty) {
+            ldByIndex = {for (final item in ldList) item.index: item};
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 2.1. Kiểm tra các session thiết bị đang ghi nhận xem có bị tắt thủ công ngoài màn hình hay không
+    for (final entry in _activeSessions.entries.toList()) {
+      final sessionKey = entry.key;
+      final session = entry.value;
+      if (_closingDeviceIps.contains(sessionKey)) continue;
+      if (!session.hasActiveDeviceState) continue;
+
+      // Trường hợp A: Thiết bị ngoại vi WiFi/TCP
+      if (session.remoteDeviceAddress != null && session.remoteDeviceAddress!.isNotEmpty) {
+        if (adbQuerySucceeded &&
+            (session.deviceLaunchedAt == null ||
+                now.difference(session.deviceLaunchedAt!) >= const Duration(seconds: 4))) {
+          final stillConnected =
+              onlineAdbRecords.any((r) => r.matchesSerial(session.remoteDeviceAddress!));
+          if (!stillConnected) {
+            session.remoteDeviceAddress = null;
+            session.deviceLaunchedAt = null;
+            try {
+              await session.httpBridgeServer?.close();
+            } catch (_) {}
+            session.httpBridgeServer = null;
+            stateChanged = true;
+          }
+        }
+        continue;
+      }
+
+      // Trường hợp B: Giả lập LDPlayer hoặc thiết bị ADB trong Android Studio
+      if ((session.adbDeviceSerial != null && session.adbDeviceSerial!.isNotEmpty) ||
+          session.ldPlayerIndex != null) {
+        final ldIdx = session.ldPlayerIndex;
+        final boundSerial = session.adbDeviceSerial;
+
+        if (session.isDeviceBooting) {
+          // Cập nhật ngay serial thực tế khi LDPlayer vừa xuất hiện trên ADB
+          if (ldIdx != null && adbQuerySucceeded) {
+            final emuS = LdPlayerAdbParser.ldPlayerEmulatorSerial(ldIdx);
+            final tcpS = LdPlayerAdbParser.ldPlayerTcpSerial(ldIdx);
+            for (final rec in onlineAdbRecords) {
+              if (rec.matchesSerial(emuS) || rec.matchesSerial(tcpS)) {
+                session.adbDeviceSerial = rec.serial;
+                session.isDeviceBooting = false;
+                break;
+              }
+            }
+          }
+          // Nếu người dùng tắt cửa sổ LDPlayer ngay trong lúc đang khởi động
+          if (session.isDeviceBooting &&
+              ldIdx != null &&
+              ldByIndex != null &&
+              ldByIndex.containsKey(ldIdx) &&
+              session.deviceLaunchedAt != null &&
+              now.difference(session.deviceLaunchedAt!) >= const Duration(seconds: 5)) {
+            if (!ldByIndex[ldIdx]!.isRunning) {
+              await _clearSessionDeviceFields(sessionKey, session);
+              stateChanged = true;
+            }
+          }
+          continue;
+        }
+
+        if (session.deviceLaunchedAt != null &&
+            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 2)) {
+          continue;
+        }
+
+        bool stillOnline = true;
+        if (ldIdx != null && ldByIndex != null && ldByIndex.containsKey(ldIdx)) {
+          if (!ldByIndex[ldIdx]!.isRunning) {
+            stillOnline = false;
+          }
+        }
+        if (stillOnline && adbQuerySucceeded && boundSerial != null && boundSerial.isNotEmpty) {
+          if (!onlineAdbRecords.any((r) => r.matchesSerial(boundSerial))) {
+            stillOnline = false;
+          }
+        }
+
+        if (!stillOnline) {
+          await _clearSessionDeviceFields(sessionKey, session);
+          stateChanged = true;
+        }
+        continue;
+      }
+
+      // Trường hợp C: Máy ảo Android Studio AVD chuẩn
+      if (session.deviceProcess != null) {
+        // Tiến trình trực tiếp sẽ tự động bắn sự kiện exitCode ngay lập tức khi đóng cửa sổ
+        continue;
+      }
+
+      if (session.emulatorPort != null) {
+        if (session.deviceLaunchedAt != null &&
+            now.difference(session.deviceLaunchedAt!) < const Duration(seconds: 5)) {
+          continue;
+        }
+        final expectedSerial = 'emulator-${session.emulatorPort}';
+        bool avdAlive = false;
+        if (adbQuerySucceeded &&
+            onlineAdbRecords.any((r) => r.matchesSerial(expectedSerial))) {
+          avdAlive = true;
+        } else if (Platform.isLinux && linuxCmdlines != null) {
+          final needlePort = '-port\x00${session.emulatorPort}';
+          avdAlive = linuxCmdlines.any((cmd) => cmd.contains(needlePort));
+        }
+        if (!avdAlive) {
+          await _clearSessionDeviceFields(sessionKey, session);
+          stateChanged = true;
+        }
+      }
+    }
+
+    // 2.2. Tự động khôi phục các thiết bị đang chạy từ file metadata tạm (do CLI mxh-tool hoặc mở trước khi bật lại app)
+    if (tmpDir.existsSync()) {
+      try {
+        for (final f in tmpDir.listSync(followLinks: false)) {
+          if (f is! File) continue;
+          final base = p.basename(f.path);
+          if (!base.startsWith('device_') || !base.endsWith('.json')) continue;
+          try {
+            final meta = json.decode(f.readAsStringSync());
+            if (meta is! Map) continue;
+            final ip = meta['ip']?.toString();
+            final entryKey = meta['entry_key']?.toString();
+            if (ip == null || ip.isEmpty) continue;
+            final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+            if (_closingDeviceIps.contains(trackKey) ||
+                _manuallyDetachedDeviceKeys.contains(trackKey)) {
+              continue;
+            }
+            if (_activeSessions[trackKey]?.hasActiveDeviceState == true) {
+              continue;
+            }
+
+            final adbSerial = meta['adb_serial']?.toString();
+            final ldIdxRaw = meta['ldplayer_index'];
+            final ldIdx = ldIdxRaw is int ? ldIdxRaw : int.tryParse(ldIdxRaw?.toString() ?? '');
+            final emuPid = meta['emulator_pid'];
+            final cportRaw = meta['console_port'];
+            final cport = cportRaw is int ? cportRaw : int.tryParse(cportRaw?.toString() ?? '');
+
+            bool isMetaAlive = false;
+            if (adbSerial != null && adbSerial.isNotEmpty && adbQuerySucceeded) {
+              isMetaAlive = onlineAdbRecords.any((r) => r.matchesSerial(adbSerial));
+              if (isMetaAlive &&
+                  ldIdx != null &&
+                  ldByIndex != null &&
+                  ldByIndex.containsKey(ldIdx) &&
+                  !ldByIndex[ldIdx]!.isRunning) {
+                isMetaAlive = false;
+              }
+            } else if (cport != null && adbQuerySucceeded) {
+              isMetaAlive = onlineAdbRecords.any((r) => r.matchesSerial('emulator-$cport'));
+            } else if (emuPid is int) {
+              isMetaAlive = _isPidAliveCrossPlatform(emuPid);
+            }
+
+            if (isMetaAlive) {
+              final session = _activeSessions[trackKey] ??
+                  Socks5Session(localPort: 0, ip: extractCleanIp(ip));
+              if (adbSerial != null && adbSerial.isNotEmpty) {
+                session.adbDeviceSerial = adbSerial;
+                session.ldPlayerIndex = ldIdx;
+              } else if (cport != null) {
+                session.emulatorPort = cport;
+              }
+              session.deviceLaunchedAt ??= now;
+              _activeSessions[trackKey] = session;
+              stateChanged = true;
+            } else if (adbQuerySucceeded || emuPid is int) {
+              try {
+                f.deleteSync();
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // 2.3. Tự động đồng bộ hai chiều với các giả lập LDPlayer / Android Studio ADB được bật trực tiếp bên ngoài
+    if (hasExternalBoundPersonas && (adbQuerySucceeded || ldByIndex != null)) {
+      final claimedLdIndices = <int>{};
+      final claimedSerials = <String>{};
+      for (final s in _activeSessions.values) {
+        if (s.ldPlayerIndex != null) claimedLdIndices.add(s.ldPlayerIndex!);
+        if (s.adbDeviceSerial != null && s.adbDeviceSerial!.isNotEmpty) {
+          claimedSerials.add(s.adbDeviceSerial!);
+        }
+      }
+
+      for (final persona in allPersonas.values) {
+        final avdId = persona.avdName?.trim();
+        if (avdId == null || !LdPlayerAdbParser.isExternalEmulatorId(avdId)) {
+          continue;
+        }
+        final trackKey = persona.effectiveEntryKey;
+        final cleanIp = persona.ip;
+
+        bool isExtRunning = false;
+        String? resolvedSerial;
+        int? resolvedLdIndex;
+        bool isStillBooting = false;
+
+        if (LdPlayerAdbParser.isLdPlayerId(avdId)) {
+          final idx = LdPlayerAdbParser.parseLdPlayerIndex(avdId);
+          if (idx == null) continue;
+          resolvedLdIndex = idx;
+          final emuS = LdPlayerAdbParser.ldPlayerEmulatorSerial(idx);
+          final tcpS = LdPlayerAdbParser.ldPlayerTcpSerial(idx);
+          AdbDeviceRecord? matchedRec;
+          for (final rec in onlineAdbRecords) {
+            if (rec.matchesSerial(emuS) || rec.matchesSerial(tcpS)) {
+              matchedRec = rec;
+              break;
+            }
+          }
+          final ldInst = ldByIndex?[idx];
+          if (ldInst != null && !ldInst.isRunning) {
+            isExtRunning = false;
+          } else if (matchedRec != null) {
+            isExtRunning = true;
+            resolvedSerial = matchedRec.serial;
+          } else if (ldInst != null && ldInst.isRunning) {
+            isExtRunning = true;
+            resolvedSerial = emuS;
+            isStillBooting = true;
+          }
+        } else if (LdPlayerAdbParser.isAdbConnectedId(avdId)) {
+          final rawSerial = LdPlayerAdbParser.parseAdbSerial(avdId);
+          if (rawSerial == null || rawSerial.isEmpty) continue;
+          for (final rec in onlineAdbRecords) {
+            if (rec.matchesSerial(rawSerial)) {
+              isExtRunning = true;
+              resolvedSerial = rec.serial;
+              break;
+            }
+          }
+          final inferredIdx =
+              LdPlayerAdbParser.inferLdPlayerIndexFromSerial(resolvedSerial ?? rawSerial);
+          if (inferredIdx != null && ldByIndex != null && ldByIndex.containsKey(inferredIdx)) {
+            resolvedLdIndex = inferredIdx;
+            if (!ldByIndex[inferredIdx]!.isRunning) {
+              isExtRunning = false;
+            }
+          }
+        }
+
+        if (!isExtRunning) {
+          // Thiết bị đã tắt thật sự -> xóa cờ ngắt kết nối thủ công để lần bật ngoài tiếp theo tự nhận ngay
+          _manuallyDetachedDeviceKeys.remove(trackKey);
+          continue;
+        }
+
+        if (_closingDeviceIps.contains(trackKey) ||
+            _manuallyDetachedDeviceKeys.contains(trackKey)) {
+          continue;
+        }
+        if (_activeSessions[trackKey]?.hasActiveDeviceState == true) {
+          continue;
+        }
+        if (resolvedLdIndex != null && claimedLdIndices.contains(resolvedLdIndex)) {
+          continue;
+        }
+        if (resolvedSerial != null && claimedSerials.contains(resolvedSerial)) {
+          continue;
+        }
+
+        final session = _activeSessions[trackKey] ??
+            Socks5Session(localPort: 0, ip: cleanIp);
+        session.adbDeviceSerial = resolvedSerial;
+        session.ldPlayerIndex = resolvedLdIndex;
+        session.isDeviceBooting = isStillBooting;
+        session.deviceLaunchedAt ??= now;
+        _activeSessions[trackKey] = session;
+
+        if (resolvedLdIndex != null) claimedLdIndices.add(resolvedLdIndex);
+        if (resolvedSerial != null) claimedSerials.add(resolvedSerial);
+        stateChanged = true;
+      }
+    }
+
+    // =========================================================================
+    // PHẦN 3: THU HỒI CÁC SESSION RỖNG ĐÃ KẾT THÚC CẢ BROWSER LẪN DEVICE
+    // =========================================================================
+    final deadKeys = <String>[];
+    for (final entry in _activeSessions.entries) {
+      final sessionKey = entry.key;
+      final session = entry.value;
+      if (_closingBrowserIps.contains(sessionKey) ||
+          _closingDeviceIps.contains(sessionKey)) {
+        continue;
+      }
+      if (session.hasActiveBrowserState || session.hasActiveDeviceState) {
+        continue;
+      }
+      // Giữ hầm SSH vừa khởi tạo trong 8 giây đầu khi đang chuẩn bị mở trình duyệt / thiết bị
+      if (now.difference(session.createdAt) < const Duration(seconds: 8)) {
+        continue;
+      }
+      if (sessionKey == session.ip) {
+        final hasActiveChild = _activeSessions.entries.any(
+          (e) =>
+              e.key.startsWith('${session.ip}##') &&
+              (e.value.hasActiveBrowserState || e.value.hasActiveDeviceState),
+        );
+        if (hasActiveChild) continue;
+      }
+      deadKeys.add(sessionKey);
+    }
+
+    if (deadKeys.isNotEmpty) {
+      for (final key in deadKeys) {
+        final removed = _activeSessions.remove(key);
+        if (removed != null) {
+          unawaited(removed.stop());
+        }
+      }
+      stateChanged = true;
+    }
+
+    if (stateChanged) {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _clearSessionDeviceFields(String sessionKey, Socks5Session session) async {
+    session.adbDeviceSerial = null;
+    session.ldPlayerIndex = null;
+    session.adbReversePort = null;
+    session.emulatorPort = null;
+    session.remoteDeviceAddress = null;
+    session.deviceProcess = null;
+    session.isDeviceBooting = false;
+    session.deviceLaunchedAt = null;
+    try {
+      session.httpBridgeProcess?.kill();
+    } catch (_) {}
+    session.httpBridgeProcess = null;
+    try {
+      await session.httpBridgeServer?.close();
+    } catch (_) {}
+    session.httpBridgeServer = null;
+
+    try {
+      final sanitizedKey = sessionKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final homeDir = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
+      final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedKey.json'));
+      if (metaFile.existsSync()) metaFile.deleteSync();
+    } catch (_) {}
+  }
+
+  bool isIpRunning(String ip) => _activeSessions.containsKey(ip);
+
+  Socks5Session? getSession(String ip) => _activeSessions[ip];
+
   /// Tìm console port (5554, 5556,...) của máy ảo AVD đang chạy trên hệ thống
   int? _findRunningConsolePortForAvd(String avdName) {
     // 1. Kiểm tra trong metadata json trước nếu có
     try {
-      final homeDir = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.systemTemp.path;
+      final homeDir = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
       final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
       if (tmpDir.existsSync()) {
         for (final f in tmpDir.listSync(followLinks: false)) {
           if (f is File && f.path.contains('device_') && f.path.endsWith('.json')) {
             try {
               final meta = json.decode(f.readAsStringSync());
-              if (meta['target_avd'] == avdName || (meta['ip'] != null && avdName.contains(meta['ip'].toString().replaceAll('.', '_')))) {
+              if (meta['target_avd'] == avdName ||
+                  (meta['ip'] != null &&
+                      avdName.contains(meta['ip'].toString().replaceAll('.', '_')))) {
                 final emuPid = meta['emulator_pid'];
-                if (emuPid != null && emuPid is int && File('/proc/$emuPid/cmdline').existsSync()) {
+                if (emuPid is int && _isPidAliveCrossPlatform(emuPid)) {
                   final cport = meta['console_port'];
                   if (cport != null) {
                     final parsed = int.tryParse(cport.toString());
@@ -514,38 +1012,42 @@ class Socks5ProxyService extends ChangeNotifier {
       }
     } catch (_) {}
 
-    // 2. Quét tiến trình thực tế trong /proc khớp tên avdName và -port
-    try {
-      final procDir = Directory('/proc');
-      if (procDir.existsSync()) {
-        final myPid = pid;
-        for (final entity in procDir.listSync(followLinks: false)) {
-          final baseName = entity.path.split('/').last;
-          final p = int.tryParse(baseName);
-          if (p == null || p == myPid) continue;
-          try {
-            final cmdFile = File('${entity.path}/cmdline');
-            if (cmdFile.existsSync()) {
-              final raw = cmdFile.readAsStringSync();
-              if (raw.contains(avdName) && raw.contains('-port')) {
-                final match = RegExp(r'-port[\x00\s]+(\d+)').firstMatch(raw);
-                if (match != null) {
-                  return int.tryParse(match.group(1)!);
+    // 2. Quét tiến trình thực tế trong /proc khớp tên avdName và -port (trên Linux)
+    if (Platform.isLinux) {
+      try {
+        final procDir = Directory('/proc');
+        if (procDir.existsSync()) {
+          final myPid = pid;
+          for (final entity in procDir.listSync(followLinks: false)) {
+            final baseName = entity.path.split('/').last;
+            final procPid = int.tryParse(baseName);
+            if (procPid == null || procPid == myPid) continue;
+            try {
+              final cmdFile = File('${entity.path}/cmdline');
+              if (cmdFile.existsSync()) {
+                final raw = cmdFile.readAsStringSync();
+                if (raw.contains(avdName) && raw.contains('-port')) {
+                  final match = RegExp(r'-port[\x00\s]+(\d+)').firstMatch(raw);
+                  if (match != null) {
+                    return int.tryParse(match.group(1)!);
+                  }
                 }
               }
-            }
-          } catch (_) {}
+            } catch (_) {}
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
     return null;
   }
 
   /// Đọc authentication token của emulator console
   String? _getEmulatorConsoleAuthToken() {
     try {
-      final homeDir = Platform.environment['HOME'] ?? Directory.systemTemp.path;
-      final tokenFile = File('$homeDir/.emulator_console_auth_token');
+      final homeDir = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
+      final tokenFile = File(p.join(homeDir, '.emulator_console_auth_token'));
       if (tokenFile.existsSync()) {
         final t = tokenFile.readAsStringSync().trim();
         if (t.isNotEmpty) return t;
@@ -601,42 +1103,38 @@ class Socks5ProxyService extends ChangeNotifier {
     }
   }
 
-  /// Kiểm tra xem trình duyệt gắn với IP này có đang mở hay không
+  /// Kiểm tra tức thì O(1) xem trình duyệt gắn với IP / nhân vật này có đang mở hay không
   bool isBrowserRunningForIp(String ip, {String? entryKey}) {
-    return _isSystemProcessAliveForIp(ip, entryKey: entryKey);
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    if (_closingBrowserIps.contains(trackKey)) {
+      return false;
+    }
+    final session = _activeSessions[trackKey];
+    return session != null && session.hasActiveBrowserState;
   }
 
   /// Kiểm tra xem có BẤT KỲ nhân vật nào (gốc hoặc phụ) của IP này đang mở trình duyệt hay không
   bool isAnyBrowserRunningForIp(String ip) {
-    if (isBrowserRunningForIp(ip)) {
+    final cleanIp = extractCleanIp(ip);
+    if (isBrowserRunningForIp(cleanIp)) {
       return true;
     }
-    // Quét các khóa nhân vật phụ dạng 'ip##n' trong danh sách session đang track
     for (final key in _activeSessions.keys) {
-      if (key.startsWith('$ip##') && isBrowserRunningForIp(ip, entryKey: key)) {
+      if (key.startsWith('$cleanIp##') && isBrowserRunningForIp(cleanIp, entryKey: key)) {
         return true;
       }
     }
     return false;
   }
 
-  /// Kiểm tra xem mobile device / giả lập gắn với IP hoặc nhân vật này có đang chạy hay không
+  /// Kiểm tra tức thì O(1) xem mobile device / giả lập gắn với IP hoặc nhân vật này có đang chạy hay không
   bool isDeviceRunningForIp(String ip, {String? entryKey}) {
-    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
-        ? entryKey.trim()
-        : ip.trim();
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
     if (_closingDeviceIps.contains(trackKey)) {
       return false;
     }
     final session = _activeSessions[trackKey];
-    if (session?.remoteDeviceAddress != null) {
-      return true;
-    }
-    if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
-      return true;
-    }
-    return _isDeviceProcessAliveForIp(cleanIp, entryKey: trackKey);
+    return session != null && session.hasActiveDeviceState;
   }
 
   /// Danh sách tất cả khóa phiên (IP hoặc entryKey) hiện đang có thiết bị mobile / giả lập đang chạy
@@ -1294,16 +1792,15 @@ class Socks5ProxyService extends ChangeNotifier {
     String? browserProfileId,
     String? entryKey,
   }) async {
-    // Khóa định danh nhân vật: nhân vật gốc dùng chính IP, nhân vật phụ dùng 'ip##n'
-    // IP thật vẫn giữ vai trò địa chỉ mạng/proxy, entryKey chỉ phân biệt profile dữ liệu
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty) ? entryKey.trim() : ip;
-    final bool isRootPersona = trackKey == ip;
-    // Nhân vật gốc giữ nguyên thư mục ip_<ip> (tương thích dữ liệu cũ),
-    // nhân vật phụ dùng thư mục ek_<entryKey> để không giẫm chân nhau
-    final dirName = isRootPersona ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}' : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    final cleanIp = extractCleanIp(trackKey);
+    final dirName = _isolatedProfileDirName(cleanIp, trackKey);
+
+    _manuallyDetachedBrowserKeys.remove(trackKey);
+
     // Nếu trình duyệt của nhân vật này đang chạy sẵn rồi thì không mở thêm cửa sổ trùng lặp nữa
-    if (isBrowserRunningForIp(ip, entryKey: trackKey)) {
-      debugPrint('[Browser] Trình duyệt cho IP $ip đang hoạt động, bỏ qua không mở thêm phiên trùng lặp.');
+    if (isBrowserRunningForIp(cleanIp, entryKey: trackKey)) {
+      debugPrint('[Browser] Trình duyệt cho $trackKey đang hoạt động, bỏ qua không mở thêm phiên trùng lặp.');
       return true;
     }
 
@@ -1312,72 +1809,81 @@ class Socks5ProxyService extends ChangeNotifier {
       throw Exception('Không tìm thấy trình duyệt khả dụng (Chrome, Edge, Opera, Brave, Firefox) trên hệ thống local.');
     }
 
-    // Đường dẫn thư mục dữ liệu riêng cho từng IP để cô lập profile không ảnh hưởng trình duyệt gốc
-    final profileDir = Directory('${getBrowserProfilesDirectory().path}/$dirName');
+    // Đường dẫn thư mục dữ liệu riêng cho từng nhân vật để cô lập profile không ảnh hưởng trình duyệt gốc
+    final profileDir = Directory(p.join(getBrowserProfilesDirectory().path, dirName));
     if (!profileDir.existsSync()) {
       profileDir.createSync(recursive: true);
     }
 
+    if (PersonaService().allPersonas.isEmpty) {
+      try {
+        await PersonaService().loadSavedPersonas();
+      } catch (_) {}
+    }
+    final resolvedProfileIdFromPersona = PersonaService().getPersona(trackKey)?.browserProfileId?.trim();
+
     // Nếu nhân vật được gán 1 profile của trình duyệt hệ thống thì mở đúng profile đó
-    // (browserProfileId rỗng = dùng user-data-dir cô lập riêng theo IP như cũ)
-    final bool useSystemProfile = browserProfileId != null && browserProfileId.trim().isNotEmpty;
+    final cleanProfileId = (browserProfileId != null && browserProfileId.trim().isNotEmpty)
+        ? browserProfileId.trim()
+        : resolvedProfileIdFromPersona;
+    final bool useSystemProfile = cleanProfileId != null && cleanProfileId.isNotEmpty;
+    final String? resolvedSystemProfileDir = useSystemProfile
+        ? BrowserProfileService().resolveSystemProfileDirectory(executable, cleanProfileId)
+        : null;
 
-    // Cấu hình ngôn ngữ tiếng Việt và tắt translate trong file Preferences của profile
-    // (Bỏ qua khi dùng profile hệ thống để không đụng vào dữ liệu thật của trình duyệt)
+    // Cấu hình ngôn ngữ tiếng Việt và tắt translate trong file Preferences của profile cô lập
     if (!useSystemProfile) {
       try {
-      final defaultDir = Directory('${profileDir.path}/Default');
-      if (!defaultDir.existsSync()) {
-        defaultDir.createSync(recursive: true);
-      }
-      final prefFile = File('${defaultDir.path}/Preferences');
-      Map<String, dynamic> prefData = {};
-      if (prefFile.existsSync()) {
-        try {
-          final content = prefFile.readAsStringSync();
-          if (content.trim().isNotEmpty) {
-            final decoded = jsonDecode(content);
-            if (decoded is Map<String, dynamic>) {
-              prefData = decoded;
+        final defaultDir = Directory(p.join(profileDir.path, 'Default'));
+        if (!defaultDir.existsSync()) {
+          defaultDir.createSync(recursive: true);
+        }
+        final prefFile = File(p.join(defaultDir.path, 'Preferences'));
+        Map<String, dynamic> prefData = {};
+        if (prefFile.existsSync()) {
+          try {
+            final content = prefFile.readAsStringSync();
+            if (content.trim().isNotEmpty) {
+              final decoded = jsonDecode(content);
+              if (decoded is Map<String, dynamic>) {
+                prefData = decoded;
+              }
             }
-          }
-        } catch (_) {}
-      }
-      prefData['translate'] = {'enabled': false};
-      prefData['translate_blocked_hosts'] = [];
-      prefData['intl'] = {
-        'selected_languages': 'vi-VN,vi,en-US,en',
-        'accept_languages': 'vi-VN,vi,en-US,en',
-      };
-      prefFile.writeAsStringSync(jsonEncode(prefData));
+          } catch (_) {}
+        }
+        prefData['translate'] = {'enabled': false};
+        prefData['translate_blocked_hosts'] = [];
+        prefData['intl'] = {
+          'selected_languages': 'vi-VN,vi,en-US,en',
+          'accept_languages': 'vi-VN,vi,en-US,en',
+        };
+        prefFile.writeAsStringSync(jsonEncode(prefData));
       } catch (_) {}
     }
 
-    // Cấu hình Local State của Chrome cho profile (ép app_locale = vi)
+    // Cấu hình Local State của Chrome cho profile cô lập (ép app_locale = vi)
     if (!useSystemProfile) {
       try {
-      final localStateFile = File('${profileDir.path}/Local State');
-      Map<String, dynamic> localStateData = {};
-      if (localStateFile.existsSync()) {
-        try {
-          final content = localStateFile.readAsStringSync();
-          if (content.trim().isNotEmpty) {
-            final decoded = jsonDecode(content);
-            if (decoded is Map<String, dynamic>) {
-              localStateData = decoded;
+        final localStateFile = File(p.join(profileDir.path, 'Local State'));
+        Map<String, dynamic> localStateData = {};
+        if (localStateFile.existsSync()) {
+          try {
+            final content = localStateFile.readAsStringSync();
+            if (content.trim().isNotEmpty) {
+              final decoded = jsonDecode(content);
+              if (decoded is Map<String, dynamic>) {
+                localStateData = decoded;
+              }
             }
-          }
-        } catch (_) {}
-      }
-      localStateData['intl'] = {'app_locale': 'vi'};
-      localStateFile.writeAsStringSync(jsonEncode(localStateData));
+          } catch (_) {}
+        }
+        localStateData['intl'] = {'app_locale': 'vi'};
+        localStateFile.writeAsStringSync(jsonEncode(localStateData));
       } catch (_) {}
     }
 
-    // Ép buộc Facebook sử dụng giao diện Tiếng Việt bằng cách tiêm cookie locale=vi_VN vào profile
     if (!useSystemProfile) _ensureFacebookVietnameseCookie(profileDir.path);
 
-    // Xử lý URL khởi chạy: nếu mở Facebook thì ưu tiên kèm locale=vi_VN
     var targetUrl = (startUrl != null && startUrl.isNotEmpty) ? startUrl : 'https://type.vn';
     if (targetUrl.contains('facebook.com')) {
       if (!targetUrl.contains('locale=') && !targetUrl.contains('set_token=')) {
@@ -1386,54 +1892,43 @@ class Socks5ProxyService extends ChangeNotifier {
       }
     }
 
-    // Thử kết nối SOCKS5 nếu có server được chỉ định (ngoại trừ 127.0.0.1 / localhost là mạng trực tiếp của máy tính)
+    // Thử kết nối SOCKS5 nếu có server được chỉ định (ngoại trừ 127.0.0.1 / localhost)
     String? socks5Proxy;
-    Socks5Session? session;
-    final isLocalDirect = ip == '127.0.0.1' || ip == 'localhost';
+    Socks5Session? rootSession;
+    final isLocalDirect = cleanIp == '127.0.0.1' || cleanIp == 'localhost';
     if (server != null && !isLocalDirect) {
       try {
-        session = await startSocks5Server(server: server, ip: ip);
-        socks5Proxy = 'socks5://127.0.0.1:${session.localPort}';
+        rootSession = await startSocks5Server(server: server, ip: cleanIp);
+        socks5Proxy = 'socks5://127.0.0.1:${rootSession.localPort}';
       } catch (_) {
         // Fallback: Nếu kết nối SSH server lỗi thì vẫn cho phép mở local browser
       }
     }
 
-    // Dọn dẹp triệt để các lock file Singleton và tiến trình cũ của profile này nếu bị crash trước đó
-    // (Chỉ áp dụng cho profile cô lập, tuyệt đối không đụng lock của profile hệ thống)
-    if (!useSystemProfile) {
+    // Dọn dẹp các lock file Singleton rác của profile cô lập nếu bị crash trước đó
+    if (!useSystemProfile && !_isIsolatedProfileDirLocked(profileDir)) {
       try {
-      if (profileDir.existsSync()) {
-        for (final entity in profileDir.listSync(followLinks: false)) {
-          final baseName = entity.path.split(Platform.isWindows ? r'\' : '/').last;
-          if (baseName.startsWith('Singleton')) {
-            try {
-              final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
-              if (type == FileSystemEntityType.link) {
-                Link(entity.path).deleteSync();
-              } else if (type == FileSystemEntityType.file) {
-                File(entity.path).deleteSync();
-              } else if (type == FileSystemEntityType.directory) {
-                Directory(entity.path).deleteSync(recursive: true);
-              }
-            } catch (_) {
+        if (profileDir.existsSync()) {
+          for (final entity in profileDir.listSync(followLinks: false)) {
+            final baseName = p.basename(entity.path);
+            if (baseName.startsWith('Singleton')) {
               try {
-                entity.deleteSync(recursive: true);
-              } catch (_) {}
+                final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+                if (type == FileSystemEntityType.link) {
+                  Link(entity.path).deleteSync();
+                } else if (type == FileSystemEntityType.file) {
+                  File(entity.path).deleteSync();
+                } else if (type == FileSystemEntityType.directory) {
+                  Directory(entity.path).deleteSync(recursive: true);
+                }
+              } catch (_) {
+                try {
+                  entity.deleteSync(recursive: true);
+                } catch (_) {}
+              }
             }
           }
         }
-        for (final lockName in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-          try {
-            final f = File('${profileDir.path}/$lockName');
-            if (f.existsSync()) f.deleteSync();
-          } catch (_) {}
-          try {
-            final l = Link('${profileDir.path}/$lockName');
-            if (l.existsSync()) l.deleteSync();
-          } catch (_) {}
-        }
-      }
       } catch (_) {}
     }
 
@@ -1441,21 +1936,20 @@ class Socks5ProxyService extends ChangeNotifier {
     List<String> args;
     if (isFirefox) {
       args = [
-        if (useSystemProfile) ...['-P', browserProfileId],
-        '-new-tab',
+        '-no-remote',
+        if (useSystemProfile) ...['-P', cleanProfileId] else ...['-profile', profileDir.path],
         targetUrl,
       ];
     } else {
-      final extDir = '${profileDir.path}/vietnamese_meta_ext';
+      final extDir = p.join(profileDir.path, 'vietnamese_meta_ext');
       final currentExeDir = File(Platform.resolvedExecutable).parent.path;
       final candidatesCaptcha = [
-        '${Directory.current.path}/extensions/tiktok_captcha_solver',
-        '$currentExeDir/extensions/tiktok_captcha_solver',
-        '$currentExeDir/data/flutter_assets/extensions/tiktok_captcha_solver',
-        '/home/yenai/Documents/Projects/Typing/apps/plugins/agent-mxh-auto/extensions/tiktok_captcha_solver',
+        p.join(Directory.current.path, 'extensions', 'tiktok_captcha_solver'),
+        p.join(currentExeDir, 'extensions', 'tiktok_captcha_solver'),
+        p.join(currentExeDir, 'data', 'flutter_assets', 'extensions', 'tiktok_captcha_solver'),
       ];
       final List<String> loadedExtensions = [];
-      if (Directory(extDir).existsSync()) {
+      if (!useSystemProfile && Directory(extDir).existsSync()) {
         loadedExtensions.add(extDir);
       }
       for (final capDir in candidatesCaptcha) {
@@ -1471,11 +1965,9 @@ class Socks5ProxyService extends ChangeNotifier {
         '--test-type',
         '--disable-features=Translate,TranslateUI',
         '--disable-translate',
-        // Chỉ thêm ozone platform x11 trên Linux để tránh xung đột Wayland NVIDIA
         if (Platform.isLinux) '--ozone-platform=x11',
         if (socks5Proxy != null) '--proxy-server=$socks5Proxy',
-        // Dùng đúng profile hệ thống được gắn cho nhân vật nếu có
-        if (useSystemProfile) '--profile-directory=$browserProfileId',
+        if (useSystemProfile) '--profile-directory=$cleanProfileId',
         if (!useSystemProfile) '--user-data-dir=${profileDir.path}',
         if (loadedExtensions.isNotEmpty) '--load-extension=${loadedExtensions.join(',')}',
         '--no-first-run',
@@ -1486,7 +1978,6 @@ class Socks5ProxyService extends ChangeNotifier {
       ];
     }
 
-    // Thiết lập biến môi trường
     Map<String, String>? browserEnv;
     if (Platform.isLinux) {
       browserEnv = <String, String>{};
@@ -1515,48 +2006,93 @@ class Socks5ProxyService extends ChangeNotifier {
     }
 
     try {
-      Process? proc;
-      final hasSystemdRun = Platform.isLinux && File('/usr/bin/systemd-run').existsSync();
-      if (hasSystemdRun) {
-        final unitName = 'agy-browser-$dirName-${DateTime.now().millisecondsSinceEpoch}';
-        final systemdArgs = [
-          '--user',
-          '--unit=$unitName',
-          executable,
-          ...args,
-        ];
-        await Process.run(
-          '/usr/bin/systemd-run',
-          systemdArgs,
-          environment: browserEnv,
-          includeParentEnvironment: false,
-        );
+      // Khởi chạy với ProcessStartMode.normal để bắt chính xác sự kiện exitCode tức thì (< 20ms) khi người dùng đóng cửa sổ
+      final proc = await Process.start(
+        executable,
+        args,
+        environment: browserEnv,
+        includeParentEnvironment: browserEnv == null,
+        mode: ProcessStartMode.normal,
+      );
+      proc.stdout.listen((_) {}, onError: (_) {});
+      proc.stderr.listen((_) {}, onError: (_) {});
+
+      final launchedAt = DateTime.now();
+      Socks5Session targetSession;
+      if (trackKey == cleanIp && rootSession != null) {
+        targetSession = rootSession;
       } else {
-        proc = await Process.start(
-          executable,
-          args,
-          environment: browserEnv,
-          includeParentEnvironment: browserEnv == null,
-          mode: ProcessStartMode.detached,
-        );
+        targetSession = _activeSessions[trackKey] ??
+            Socks5Session(
+              localPort: rootSession?.localPort ?? 0,
+              server: server,
+              ip: cleanIp,
+            );
+        _activeSessions[trackKey] = targetSession;
       }
 
-      if (session != null) {
-        session.browserProcess = proc;
-        session.browserLaunchedAt = DateTime.now();
-      } else {
-        // Lưu lại session cục bộ không SSH để theo dõi trạng thái tiến trình
-        final localSession = _activeSessions[trackKey] ?? Socks5Session(
-          localPort: 0,
-          server: server,
-          ip: ip,
-          sshProcess: null,
-          askpassFile: null,
-        );
-        localSession.browserProcess = proc;
-        localSession.browserLaunchedAt = DateTime.now();
-        _activeSessions[trackKey] = localSession;
-      }
+      targetSession.browserProcess = proc;
+      targetSession.browserLaunchedAt = launchedAt;
+      targetSession.browserExecutable = executable;
+      targetSession.browserProfileId = useSystemProfile ? cleanProfileId : null;
+      targetSession.systemBrowserProfileDir = resolvedSystemProfileDir;
+      targetSession.browserDelegatedToExistingInstance = false;
+
+      // Lắng nghe sự kiện thoát tiến trình để cập nhật UI ngay lập tức khi đóng cửa sổ trình duyệt
+      unawaited(proc.exitCode.then((_) async {
+        if (targetSession.browserProcess != proc) return;
+        targetSession.browserProcess = null;
+
+        if (_closingBrowserIps.contains(trackKey)) {
+          return;
+        }
+
+        final elapsedMs = DateTime.now().difference(launchedAt).inMilliseconds;
+        if (useSystemProfile) {
+          // Trường hợp Chrome/Edge đã mở sẵn profile khác: tiến trình con chuyển giao (handoff) cho tiến trình gốc và tự thoát sau ~100-1500ms
+          if (elapsedMs < 5000) {
+            await Future.delayed(const Duration(milliseconds: 350));
+          }
+          final stillActive = _isSystemProfileDirActive(
+            resolvedSystemProfileDir,
+            executable,
+            cleanProfileId,
+          );
+          if (stillActive && !_manuallyDetachedBrowserKeys.contains(trackKey)) {
+            targetSession.browserDelegatedToExistingInstance = true;
+            notifyListeners();
+            return;
+          }
+        } else {
+          // Trường hợp profile cô lập (ví dụ Snap wrapper fork trên Linux): kiểm tra nhanh lock thực tế
+          if (elapsedMs < 3000) {
+            await Future.delayed(const Duration(milliseconds: 250));
+          }
+          if (_isIsolatedProfileDirLocked(profileDir)) {
+            notifyListeners();
+            return;
+          }
+        }
+
+        targetSession.browserLaunchedAt = null;
+        targetSession.browserDelegatedToExistingInstance = false;
+        targetSession.browserProfileId = null;
+        targetSession.systemBrowserProfileDir = null;
+
+        final hasActiveChild = trackKey == cleanIp &&
+            _activeSessions.entries.any(
+              (e) =>
+                  e.key.startsWith('$cleanIp##') &&
+                  (e.value.hasActiveBrowserState || e.value.hasActiveDeviceState),
+            );
+        if (!hasActiveChild && !targetSession.hasActiveDeviceState) {
+          final removed = _activeSessions.remove(trackKey);
+          if (removed != null) {
+            unawaited(removed.stop());
+          }
+        }
+        notifyListeners();
+      }));
 
       notifyListeners();
       return true;
@@ -2791,152 +3327,45 @@ for root, _, files in os.walk(target_dir):
     return cloneAvdName;
   }
 
-  /// Khởi chạy hoặc gắn kết giả lập LDPlayer / thiết bị trong danh sách ADB của Android Studio
-  /// Định tuyến lưu lượng qua cầu nối SOCKS5 -> HTTP Proxy của nhân vật (ưu tiên `adb reverse` không phụ thuộc tường lửa)
-  Future<bool> _launchOrAttachExternalEmulator({
-    required Socks5Session session,
+  void _writeDeviceSessionMetadata({
     required String ip,
     required String trackKey,
     required String avdId,
+    required String serial,
+    int? ldIndex,
+  }) {
+    try {
+      final homeDir = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
+      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
+      if (!tmpDir.existsSync()) tmpDir.createSync(recursive: true);
+      final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final metaFile = File(p.join(tmpDir.path, 'device_$sanitizedTrackKey.json'));
+      metaFile.writeAsStringSync(jsonEncode({
+        'ip': ip,
+        'entry_key': trackKey,
+        'target_avd': avdId,
+        'adb_serial': serial,
+        'ldplayer_index': ldIndex,
+      }));
+    } catch (_) {}
+  }
+
+  /// Áp dụng cầu nối proxy SOCKS5 -> HTTP, đồng bộ số điện thoại và mở URL cho thiết bị ADB / LDPlayer đã boot xong
+  Future<void> _configureExternalDevicePostBoot({
+    required String adbBin,
+    required Socks5Session session,
+    required String trackKey,
+    required String serial,
     String? startUrl,
     String? phoneNumber,
     bool autoSyncPhone = false,
   }) async {
-    final adbBin = await _findAdbExecutable();
-    String? resolvedSerial;
-    int? ldIndex;
-
-    Future<String?> findOnlineLdPlayerSerial(int idx) async {
-      final emuSerial = LdPlayerAdbParser.ldPlayerEmulatorSerial(idx);
-      final tcpSerial = LdPlayerAdbParser.ldPlayerTcpSerial(idx);
-      try {
-        final devRes = await Process.run(adbBin, ['devices', '-l'])
-            .timeout(const Duration(seconds: 3));
-        if (devRes.exitCode == 0) {
-          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(devRes.stdout.toString());
-          for (final rec in records) {
-            if (rec.matchesSerial(emuSerial) || rec.matchesSerial(tcpSerial)) {
-              return rec.serial;
-            }
-          }
-        }
-      } catch (_) {}
-      return null;
+    if (_closingDeviceIps.contains(trackKey) || _activeSessions[trackKey] != session) {
+      return;
     }
 
-    if (LdPlayerAdbParser.isLdPlayerId(avdId)) {
-      ldIndex = LdPlayerAdbParser.parseLdPlayerIndex(avdId);
-      if (ldIndex == null) {
-        throw Exception('Định danh giả lập LDPlayer không hợp lệ: $avdId');
-      }
-
-      // 1. Kiểm tra xem giả lập LDPlayer này đã chạy sẵn trong Android Studio ADB chưa
-      resolvedSerial = await findOnlineLdPlayerSerial(ldIndex);
-
-      // Nếu chưa thấy trên ADB, thử chủ động connect cổng TCP ADB của LDPlayer trước
-      if (resolvedSerial == null) {
-        try {
-          await Process.run(adbBin, ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(ldIndex)])
-              .timeout(const Duration(seconds: 2));
-        } catch (_) {}
-        resolvedSerial = await findOnlineLdPlayerSerial(ldIndex);
-      }
-
-      // 2. Nếu vẫn chưa chạy, gọi ldconsole.exe launch --index <ldIndex> để bật LDPlayer
-      if (resolvedSerial == null) {
-        final launched = await LdPlayerService().launchVm(ldIndex);
-        if (!launched) {
-          throw Exception(
-            'Giả lập LDPlayer #$ldIndex chưa bật và không tìm thấy công cụ ldconsole.exe để khởi chạy tự động. '
-            'Vui lòng mở giả lập LDPlayer #$ldIndex trước rồi bấm Mở device.',
-          );
-        }
-
-        // Chờ LDPlayer khởi động xong và xuất hiện trong ADB (tối đa 70 giây)
-        for (int attempt = 0; attempt < 35; attempt++) {
-          await Future.delayed(const Duration(seconds: 2));
-          if (attempt % 3 == 1) {
-            try {
-              await Process.run(adbBin, ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(ldIndex)])
-                  .timeout(const Duration(milliseconds: 1500));
-            } catch (_) {}
-          }
-          final candidate = await findOnlineLdPlayerSerial(ldIndex);
-          if (candidate != null) {
-            try {
-              final bootRes = await Process.run(
-                adbBin,
-                ['-s', candidate, 'shell', 'getprop', 'sys.boot_completed'],
-              ).timeout(const Duration(seconds: 3));
-              if (bootRes.stdout.toString().trim() == '1') {
-                resolvedSerial = candidate;
-                break;
-              }
-            } catch (_) {}
-          }
-        }
-      }
-
-      if (resolvedSerial == null) {
-        throw Exception(
-          'Không nhận được kết nối ADB từ LDPlayer #$ldIndex sau khi khởi động. '
-          'Vui lòng kiểm tra mục Cài đặt khác -> Kết nối ADB -> Mở kết nối cục bộ trong LDPlayer.',
-        );
-      }
-    } else if (LdPlayerAdbParser.isAdbConnectedId(avdId)) {
-      final rawSerial = LdPlayerAdbParser.parseAdbSerial(avdId);
-      if (rawSerial == null || rawSerial.isEmpty) {
-        throw Exception('Địa chỉ ADB của giả lập không hợp lệ: $avdId');
-      }
-
-      if (rawSerial.contains(':')) {
-        try {
-          await Process.run(adbBin, ['connect', rawSerial])
-              .timeout(const Duration(seconds: 3));
-        } catch (_) {}
-      }
-
-      bool isOnline = false;
-      try {
-        final devRes = await Process.run(adbBin, ['devices', '-l'])
-            .timeout(const Duration(seconds: 3));
-        if (devRes.exitCode == 0) {
-          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(devRes.stdout.toString());
-          for (final rec in records) {
-            if (rec.matchesSerial(rawSerial)) {
-              resolvedSerial = rec.serial;
-              isOnline = true;
-              break;
-            }
-          }
-        }
-      } catch (_) {}
-
-      if (!isOnline || resolvedSerial == null) {
-        throw Exception(
-          'Thiết bị / giả lập $rawSerial hiện không trực tuyến trong ADB của Android Studio. '
-          'Vui lòng bật giả lập LDPlayer trước rồi thử lại.',
-        );
-      }
-
-      // Chờ hệ điều hành Android bên trong giả lập hoàn tất boot nếu vừa mở
-      for (int i = 0; i < 10; i++) {
-        try {
-          final bootRes = await Process.run(
-            adbBin,
-            ['-s', resolvedSerial, 'shell', 'getprop', 'sys.boot_completed'],
-          ).timeout(const Duration(seconds: 2));
-          if (bootRes.stdout.toString().trim() == '1') break;
-        } catch (_) {}
-        await Future.delayed(const Duration(seconds: 2));
-      }
-    } else {
-      throw Exception('Loại thiết bị không được hỗ trợ: $avdId');
-    }
-
-    final serial = resolvedSerial;
-
-    // 3. Định tuyến proxy SOCKS5 -> HTTP Bridge vào giả lập LDPlayer / ADB (hoặc xóa proxy nếu dùng IP 127.0.0.1)
     try {
       session.httpBridgeProcess?.kill();
       await session.httpBridgeServer?.close();
@@ -2956,12 +3385,13 @@ for root, _, files in os.walk(target_dir):
         );
         session.httpBridgeServer = bridgeServer;
 
-        // Ưu tiên adb reverse (đi thẳng qua kênh ADB về 127.0.0.1 của host, tương thích cả NAT lẫn Bridged của LDPlayer)
         bool reverseOk = false;
         try {
           final revRes = await Process.run(
             adbBin,
             ['-s', serial, 'reverse', 'tcp:$hPort', 'tcp:$hPort'],
+            stdoutEncoding: null,
+            stderrEncoding: null,
           ).timeout(const Duration(seconds: 3));
           reverseOk = revRes.exitCode == 0;
         } catch (_) {}
@@ -2982,55 +3412,316 @@ for root, _, files in os.walk(target_dir):
       } catch (_) {}
     }
 
-    session.adbDeviceSerial = serial;
-    session.ldPlayerIndex = ldIndex;
-    session.deviceLaunchedAt = DateTime.now();
+    if (_closingDeviceIps.contains(trackKey) || _activeSessions[trackKey] != session) {
+      return;
+    }
 
-    // Lưu metadata để công cụ CLI tự động hóa (mxh-tool) cũng nhận diện đúng serial của nhân vật
-    try {
-      final homeDir = Platform.environment['USERPROFILE'] ??
-          Platform.environment['HOME'] ??
-          Directory.systemTemp.path;
-      final tmpDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'tmp'));
-      if (!tmpDir.existsSync()) tmpDir.createSync(recursive: true);
-      final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final metaFile = File(p.join(tmpDir.path, 'device_$sanitizedTrackKey.json'));
-      metaFile.writeAsStringSync(jsonEncode({
-        'ip': ip,
-        'entry_key': trackKey,
-        'target_avd': avdId,
-        'adb_serial': serial,
-        'ldplayer_index': ldIndex,
-      }));
-    } catch (_) {}
-
-    // Đồng bộ số điện thoại nếu được bật
     if (autoSyncPhone && phoneNumber != null && phoneNumber.trim().isNotEmpty) {
       try {
         await syncPhoneNumberToDevice(serial, phoneNumber.trim());
       } catch (_) {}
     }
 
-    // Đánh thức màn hình và mở URL đích nếu có
     try {
-      await Process.run(adbBin, ['-s', serial, 'shell', 'input', 'keyevent', '224'])
-          .timeout(const Duration(seconds: 2));
+      await Process.run(
+        adbBin,
+        ['-s', serial, 'shell', 'input', 'keyevent', '224'],
+        stdoutEncoding: null,
+        stderrEncoding: null,
+      ).timeout(const Duration(seconds: 2));
       if (startUrl != null && startUrl.trim().isNotEmpty) {
-        await Process.run(adbBin, [
-          '-s',
-          serial,
-          'shell',
-          'am',
-          'start',
-          '-a',
-          'android.intent.action.VIEW',
-          '-d',
-          startUrl.trim(),
-        ]).timeout(const Duration(seconds: 3));
+        await Process.run(
+          adbBin,
+          [
+            '-s',
+            serial,
+            'shell',
+            'am',
+            'start',
+            '-a',
+            'android.intent.action.VIEW',
+            '-d',
+            startUrl.trim(),
+          ],
+          stdoutEncoding: null,
+          stderrEncoding: null,
+        ).timeout(const Duration(seconds: 3));
       }
     } catch (_) {}
+  }
+
+  /// Khởi chạy hoặc gắn kết giả lập LDPlayer / thiết bị trong danh sách ADB của Android Studio.
+  /// Cập nhật trạng thái UI tức thì ngay khi thiết bị mở/gắn kết mà không chặn nút chờ cold-boot 30-70 giây.
+  Future<bool> _launchOrAttachExternalEmulator({
+    required Socks5Session session,
+    required String ip,
+    required String trackKey,
+    required String avdId,
+    String? startUrl,
+    String? phoneNumber,
+    bool autoSyncPhone = false,
+  }) async {
+    final adbBin = await _findAdbExecutable();
+    String? resolvedSerial;
+    int? ldIndex;
+
+    Future<String?> findOnlineLdPlayerSerial(int idx) async {
+      final emuSerial = LdPlayerAdbParser.ldPlayerEmulatorSerial(idx);
+      final tcpSerial = LdPlayerAdbParser.ldPlayerTcpSerial(idx);
+      try {
+        final devRes = await Process.run(
+          adbBin,
+          ['devices', '-l'],
+          stdoutEncoding: null,
+          stderrEncoding: null,
+        ).timeout(const Duration(seconds: 2));
+        if (devRes.exitCode == 0) {
+          final rawOut = devRes.stdout is List<int>
+              ? utf8.decode(devRes.stdout as List<int>, allowMalformed: true)
+              : devRes.stdout.toString();
+          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(rawOut);
+          for (final rec in records) {
+            if (rec.matchesSerial(emuSerial) || rec.matchesSerial(tcpSerial)) {
+              return rec.serial;
+            }
+          }
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    if (LdPlayerAdbParser.isLdPlayerId(avdId)) {
+      ldIndex = LdPlayerAdbParser.parseLdPlayerIndex(avdId);
+      if (ldIndex == null) {
+        throw Exception('Định danh giả lập LDPlayer không hợp lệ: $avdId');
+      }
+      final targetLdIdx = ldIndex;
+
+      // 1. Kiểm tra xem giả lập LDPlayer này đã chạy sẵn trong Android Studio ADB chưa
+      resolvedSerial = await findOnlineLdPlayerSerial(targetLdIdx);
+
+      // Nếu chưa thấy trên ADB, thử chủ động connect cổng TCP ADB của LDPlayer nhanh
+      if (resolvedSerial == null) {
+        try {
+          await Process.run(
+            adbBin,
+            ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(targetLdIdx)],
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          ).timeout(const Duration(milliseconds: 1200));
+        } catch (_) {}
+        resolvedSerial = await findOnlineLdPlayerSerial(targetLdIdx);
+      }
+
+      // 2. Nếu chưa chạy, gọi ldconsole.exe launch --index <targetLdIdx> để bật LDPlayer và cập nhật UI NGAY LẬP TỨC
+      if (resolvedSerial == null) {
+        final launched = await LdPlayerService().launchVm(targetLdIdx);
+        if (!launched) {
+          throw Exception(
+            'Giả lập LDPlayer #$targetLdIdx chưa bật và không tìm thấy công cụ ldconsole.exe để khởi chạy tự động. '
+            'Vui lòng mở giả lập LDPlayer #$targetLdIdx trước rồi bấm Mở device.',
+          );
+        }
+
+        final expectedSerial = LdPlayerAdbParser.ldPlayerEmulatorSerial(targetLdIdx);
+        session.ldPlayerIndex = targetLdIdx;
+        session.adbDeviceSerial = expectedSerial;
+        session.isDeviceBooting = true;
+        session.deviceLaunchedAt = DateTime.now();
+
+        _writeDeviceSessionMetadata(
+          ip: ip,
+          trackKey: trackKey,
+          avdId: avdId,
+          serial: expectedSerial,
+          ldIndex: targetLdIdx,
+        );
+
+        notifyListeners();
+
+        // Chờ Android bên trong LDPlayer boot xong ở nền (không khóa nút giao diện) rồi tiêm cấu hình Proxy / URL
+        unawaited(() async {
+          String? bootedSerial;
+          for (int attempt = 0; attempt < 40; attempt++) {
+            await Future.delayed(const Duration(milliseconds: 1800));
+            if (_closingDeviceIps.contains(trackKey) ||
+                _activeSessions[trackKey] != session ||
+                session.ldPlayerIndex != targetLdIdx) {
+              return;
+            }
+            if (attempt % 3 == 1) {
+              try {
+                await Process.run(
+                  adbBin,
+                  ['connect', LdPlayerAdbParser.ldPlayerTcpSerial(targetLdIdx)],
+                  stdoutEncoding: null,
+                  stderrEncoding: null,
+                ).timeout(const Duration(milliseconds: 1200));
+              } catch (_) {}
+            }
+            final candidate = await findOnlineLdPlayerSerial(targetLdIdx);
+            if (candidate != null) {
+              session.adbDeviceSerial = candidate;
+              try {
+                final bootRes = await Process.run(
+                  adbBin,
+                  ['-s', candidate, 'shell', 'getprop', 'sys.boot_completed'],
+                  stdoutEncoding: null,
+                  stderrEncoding: null,
+                ).timeout(const Duration(seconds: 2));
+                final out = bootRes.stdout is List<int>
+                    ? utf8.decode(bootRes.stdout as List<int>, allowMalformed: true)
+                    : bootRes.stdout.toString();
+                if (out.trim() == '1') {
+                  bootedSerial = candidate;
+                  break;
+                }
+              } catch (_) {}
+            }
+          }
+
+          if (_closingDeviceIps.contains(trackKey) ||
+              _activeSessions[trackKey] != session) {
+            return;
+          }
+
+          if (bootedSerial != null) {
+            session.adbDeviceSerial = bootedSerial;
+            session.isDeviceBooting = false;
+            _writeDeviceSessionMetadata(
+              ip: ip,
+              trackKey: trackKey,
+              avdId: avdId,
+              serial: bootedSerial,
+              ldIndex: targetLdIdx,
+            );
+            notifyListeners();
+            await _configureExternalDevicePostBoot(
+              adbBin: adbBin,
+              session: session,
+              trackKey: trackKey,
+              serial: bootedSerial,
+              startUrl: startUrl,
+              phoneNumber: phoneNumber,
+              autoSyncPhone: autoSyncPhone,
+            );
+          } else {
+            session.isDeviceBooting = false;
+            notifyListeners();
+          }
+        }());
+
+        return true;
+      }
+    } else if (LdPlayerAdbParser.isAdbConnectedId(avdId)) {
+      final rawSerial = LdPlayerAdbParser.parseAdbSerial(avdId);
+      if (rawSerial == null || rawSerial.isEmpty) {
+        throw Exception('Địa chỉ ADB của giả lập không hợp lệ: $avdId');
+      }
+
+      if (rawSerial.contains(':')) {
+        try {
+          await Process.run(
+            adbBin,
+            ['connect', rawSerial],
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          ).timeout(const Duration(seconds: 2));
+        } catch (_) {}
+      }
+
+      bool isOnline = false;
+      try {
+        final devRes = await Process.run(
+          adbBin,
+          ['devices', '-l'],
+          stdoutEncoding: null,
+          stderrEncoding: null,
+        ).timeout(const Duration(seconds: 2));
+        if (devRes.exitCode == 0) {
+          final rawOut = devRes.stdout is List<int>
+              ? utf8.decode(devRes.stdout as List<int>, allowMalformed: true)
+              : devRes.stdout.toString();
+          final records = LdPlayerAdbParser.parseAdbDevicesLongOutput(rawOut);
+          for (final rec in records) {
+            if (rec.matchesSerial(rawSerial)) {
+              resolvedSerial = rec.serial;
+              isOnline = true;
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+
+      if (!isOnline || resolvedSerial == null) {
+        // Nếu serial khớp quy ước cổng LDPlayer, thử tự khởi chạy LDPlayer tương ứng nếu có cài đặt
+        final inferredLdIdx = LdPlayerAdbParser.inferLdPlayerIndexFromSerial(rawSerial);
+        if (inferredLdIdx != null && await LdPlayerService().launchVm(inferredLdIdx)) {
+          session.ldPlayerIndex = inferredLdIdx;
+          session.adbDeviceSerial = rawSerial;
+          session.isDeviceBooting = true;
+          session.deviceLaunchedAt = DateTime.now();
+          _writeDeviceSessionMetadata(
+            ip: ip,
+            trackKey: trackKey,
+            avdId: avdId,
+            serial: rawSerial,
+            ldIndex: inferredLdIdx,
+          );
+          notifyListeners();
+          return true;
+        }
+        throw Exception(
+          'Thiết bị / giả lập $rawSerial hiện không trực tuyến trong ADB của Android Studio. '
+          'Vui lòng bật giả lập LDPlayer trước rồi thử lại.',
+        );
+      }
+
+      ldIndex = LdPlayerAdbParser.inferLdPlayerIndexFromSerial(resolvedSerial);
+    } else {
+      throw Exception('Loại thiết bị không được hỗ trợ: $avdId');
+    }
+
+    final serial = resolvedSerial;
+
+    // Cập nhật ngay trạng thái phiên đang chạy để nút giao diện chuyển tức thì sang "Đóng device"
+    session.adbDeviceSerial = serial;
+    session.ldPlayerIndex = ldIndex;
+    session.isDeviceBooting = false;
+    session.deviceLaunchedAt = DateTime.now();
+
+    _writeDeviceSessionMetadata(
+      ip: ip,
+      trackKey: trackKey,
+      avdId: avdId,
+      serial: serial,
+      ldIndex: ldIndex,
+    );
 
     notifyListeners();
+
+    if (session.localPort > 0 || (startUrl != null && startUrl.trim().isNotEmpty)) {
+      await _configureExternalDevicePostBoot(
+        adbBin: adbBin,
+        session: session,
+        trackKey: trackKey,
+        serial: serial,
+        startUrl: startUrl,
+        phoneNumber: phoneNumber,
+        autoSyncPhone: autoSyncPhone,
+      );
+    } else {
+      unawaited(_configureExternalDevicePostBoot(
+        adbBin: adbBin,
+        session: session,
+        trackKey: trackKey,
+        serial: serial,
+        startUrl: startUrl,
+        phoneNumber: phoneNumber,
+        autoSyncPhone: autoSyncPhone,
+      ));
+    }
+
     return true;
   }
 
@@ -3047,18 +3738,49 @@ for root, _, files in os.walk(target_dir):
     String? phoneNumber,
     bool autoSyncPhone = false,
   }) async {
-    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
-        ? entryKey.trim()
-        : ip.trim();
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    final cleanIp = extractCleanIp(trackKey);
+
+    _manuallyDetachedDeviceKeys.remove(trackKey);
 
     // Nếu thiết bị của nhân vật này đang chạy sẵn rồi thì không khởi chạy trùng lặp
     if (isDeviceRunningForIp(cleanIp, entryKey: trackKey)) {
+      if (startUrl != null && startUrl.trim().isNotEmpty) {
+        final activeSerial = _activeSessions[trackKey]?.adbDeviceSerial;
+        if (activeSerial != null && activeSerial.isNotEmpty) {
+          unawaited(() async {
+            try {
+              final adbBin = await _findAdbExecutable();
+              await Process.run(
+                adbBin,
+                [
+                  '-s',
+                  activeSerial,
+                  'shell',
+                  'am',
+                  'start',
+                  '-a',
+                  'android.intent.action.VIEW',
+                  '-d',
+                  startUrl.trim(),
+                ],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 3));
+            } catch (_) {}
+          }());
+        }
+      }
       debugPrint('[Device] Thiết bị cho $trackKey đang hoạt động sẵn, bỏ qua không mở thêm phiên trùng lặp.');
       return true;
     }
 
-    final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+    if (PersonaService().allPersonas.isEmpty) {
+      try {
+        await PersonaService().loadSavedPersonas();
+      } catch (_) {}
+    }
+    final personaProfile = PersonaService().getPersona(trackKey);
     final effectiveAvdName = (avdName != null && avdName.trim().isNotEmpty)
         ? avdName.trim()
         : personaProfile?.avdName?.trim();
@@ -3382,9 +4104,30 @@ for root, _, files in os.walk(target_dir):
         emulatorBin,
         emulatorArgs,
         environment: env,
-        mode: ProcessStartMode.detached,
+        mode: ProcessStartMode.normal,
       );
+      proc.stdout.listen((_) {}, onError: (_) {});
+      proc.stderr.listen((_) {}, onError: (_) {});
       session.deviceProcess = proc;
+      session.deviceLaunchedAt = DateTime.now();
+
+      unawaited(proc.exitCode.then((_) async {
+        if (session.deviceProcess != proc) return;
+        await _clearSessionDeviceFields(trackKey, session);
+        final hasActiveChild = trackKey == cleanIp &&
+            _activeSessions.entries.any(
+              (e) =>
+                  e.key.startsWith('$cleanIp##') &&
+                  (e.value.hasActiveBrowserState || e.value.hasActiveDeviceState),
+            );
+        if (!hasActiveChild && !session.hasActiveBrowserState) {
+          final removed = _activeSessions.remove(trackKey);
+          if (removed != null) {
+            unawaited(removed.stop());
+          }
+        }
+        notifyListeners();
+      }));
 
       // Đánh thức màn hình, mở khóa AVD và tự động thiết lập ADB Global HTTP Proxy cho hệ thống
       _autoWakeAndUnlockAvd(
@@ -3583,81 +4326,183 @@ for root, _, files in os.walk(target_dir):
     notifyListeners();
   }
 
-  /// Đóng riêng trình duyệt của IP mà không làm mất hầm SOCKS5 nếu device vẫn đang chạy
+  /// Đóng riêng trình duyệt của IP / nhân vật mà không làm mất hầm SOCKS5 nếu device vẫn đang chạy
   Future<void> closeBrowserForIp(String ip, {String? entryKey}) async {
-    // Khóa track của nhân vật: entryKey nếu có, fallback IP cho luồng cũ
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty && entryKey.trim() != ip)
-        ? entryKey.trim()
-        : ip;
-    final dirName = (trackKey == ip)
-        ? 'ip_${ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}'
-        : 'ek_${trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
-    final session = _activeSessions[trackKey];
-    if (session != null) {
-      if (session.browserProcess != null) {
-        try {
-          session.browserProcess!.kill();
-        } catch (_) {}
-        session.browserProcess = null;
-      }
-      session.browserLaunchedAt = null;
-    }
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    final cleanIp = extractCleanIp(trackKey);
+    final dirName = _isolatedProfileDirName(cleanIp, trackKey);
+
+    _closingBrowserIps.add(trackKey);
+    _manuallyDetachedBrowserKeys.add(trackKey);
+    notifyListeners();
+
     try {
-      if (Platform.isWindows) {
-        try {
-          final winProfileNeedle = 'browser_profiles\\\\$dirName';
-          await Process.run('powershell', [
-            '-NoProfile',
-            '-Command',
-            "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*$winProfileNeedle*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }"
-          ]);
-        } catch (_) {}
-      } else {
-        await Process.run('pkill', ['-f', 'browser_profiles/$dirName']);
-      }
-      final homeDir = Platform.environment['USERPROFILE'] ??
-          Platform.environment['HOME'] ??
-          Directory.systemTemp.path;
-      final profileDir = Directory(p.join(homeDir, '.agent_mxh_auto', 'browser_profiles', dirName));
-      if (profileDir.existsSync()) {
-        for (final entity in profileDir.listSync(followLinks: false)) {
-          final baseName = p.basename(entity.path);
-          if (baseName.startsWith('Singleton')) {
+      final session = _activeSessions[trackKey];
+      final proc = session?.browserProcess;
+      final useSysProfile =
+          session?.browserProfileId != null && session!.browserProfileId!.trim().isNotEmpty;
+      final browserExe = session?.browserExecutable ?? findBrowserExecutable();
+      final sysProfileId = session?.browserProfileId;
+      final sysProfileDir = session?.systemBrowserProfileDir;
+
+      session?.browserProcess = null;
+      session?.browserLaunchedAt = null;
+      session?.browserDelegatedToExistingInstance = false;
+      session?.browserProfileId = null;
+      session?.systemBrowserProfileDir = null;
+
+      if (useSysProfile) {
+        // Trường hợp 1: Profile trình duyệt hệ thống
+        final otherSystemProfilesActive =
+            _hasOtherActiveChromiumSystemProfiles(browserExe, sysProfileId);
+        if (proc != null && !otherSystemProfilesActive) {
+          if (Platform.isWindows) {
             try {
-              entity.deleteSync();
+              await Process.run(
+                'taskkill',
+                ['/PID', proc.pid.toString(), '/T'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+              await Future.delayed(const Duration(milliseconds: 350));
+              if (_isPidAliveCrossPlatform(proc.pid)) {
+                await Process.run(
+                  'taskkill',
+                  ['/PID', proc.pid.toString(), '/T', '/F'],
+                  stdoutEncoding: null,
+                  stderrEncoding: null,
+                ).timeout(const Duration(seconds: 2));
+              }
+            } catch (_) {
+              try {
+                proc.kill();
+              } catch (_) {}
+            }
+          } else {
+            try {
+              proc.kill(ProcessSignal.sigterm);
+            } catch (_) {}
+          }
+        } else if (proc == null &&
+            !otherSystemProfilesActive &&
+            browserExe != null &&
+            _isSystemProfileDirActive(sysProfileDir, browserExe, sysProfileId)) {
+          // Tiến trình con đã chuyển giao sang trình duyệt chính và hiện CHỈ có duy nhất profile này mở cửa sổ
+          if (Platform.isWindows) {
+            final exeBase = p.basename(browserExe);
+            try {
+              await Process.run(
+                'taskkill',
+                ['/IM', exeBase],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+            } catch (_) {}
+          } else if (Platform.isLinux) {
+            try {
+              final exeBase = p.basename(browserExe);
+              await Process.run('pkill', ['-TERM', '-f', exeBase])
+                  .timeout(const Duration(seconds: 2));
             } catch (_) {}
           }
         }
-      }
-    } catch (_) {}
+      } else {
+        // Trường hợp 2: Profile cô lập theo nhân vật (--user-data-dir riêng biệt)
+        final profileDir = Directory(p.join(getBrowserProfilesDirectory().path, dirName));
 
-    // Nếu device cũng không còn chạy (và nếu là root IP thì không còn sub-profile nào chạy) thì giải phóng hoàn toàn session SOCKS5
-    final hasActiveChild = trackKey == ip &&
-        _activeSessions.keys.any(
-          (k) =>
-              k.startsWith('$ip##') &&
-              (_isSystemProcessAliveForIp(ip, entryKey: k) ||
-                  _isDeviceProcessAliveForIp(ip, entryKey: k)),
-        );
-    if (!hasActiveChild &&
-        !_isDeviceProcessAliveForIp(ip, entryKey: trackKey) &&
-        !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
-      final s = _activeSessions.remove(trackKey);
-      if (s != null) {
-        await s.stop();
+        if (proc != null) {
+          if (Platform.isWindows) {
+            try {
+              await Process.run(
+                'taskkill',
+                ['/PID', proc.pid.toString(), '/T'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+              await Future.delayed(const Duration(milliseconds: 250));
+              if (_isIsolatedProfileDirLocked(profileDir)) {
+                await Process.run(
+                  'taskkill',
+                  ['/PID', proc.pid.toString(), '/T', '/F'],
+                  stdoutEncoding: null,
+                  stderrEncoding: null,
+                ).timeout(const Duration(seconds: 2));
+              }
+            } catch (_) {
+              try {
+                proc.kill();
+              } catch (_) {}
+            }
+          } else {
+            try {
+              proc.kill(ProcessSignal.sigterm);
+            } catch (_) {}
+          }
+        }
+
+        // Chỉ quét theo đường dẫn profile nếu trình duyệt được mở từ phiên trước khi khởi động lại app
+        if (Platform.isWindows) {
+          if (_isIsolatedProfileDirLocked(profileDir)) {
+            try {
+              final singleSlashNeedle = 'browser_profiles\\$dirName';
+              await Process.run(
+                'powershell',
+                [
+                  '-NoProfile',
+                  '-NonInteractive',
+                  '-Command',
+                  "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*$singleSlashNeedle*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }",
+                ],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 4));
+            } catch (_) {}
+          }
+        } else {
+          try {
+            await Process.run('pkill', ['-f', 'browser_profiles/$dirName'])
+                .timeout(const Duration(seconds: 2));
+          } catch (_) {}
+        }
+
+        if (profileDir.existsSync() && !_isIsolatedProfileDirLocked(profileDir)) {
+          for (final entity in profileDir.listSync(followLinks: false)) {
+            final baseName = p.basename(entity.path);
+            if (baseName.startsWith('Singleton')) {
+              try {
+                entity.deleteSync();
+              } catch (_) {}
+            }
+          }
+        }
       }
+
+      // Nếu device cũng không còn chạy (và nếu là root IP thì không còn sub-profile nào chạy) thì giải phóng hoàn toàn session SOCKS5
+      final hasActiveChild = trackKey == cleanIp &&
+          _activeSessions.entries.any(
+            (e) =>
+                e.key.startsWith('$cleanIp##') &&
+                (e.value.hasActiveBrowserState || e.value.hasActiveDeviceState),
+          );
+      if (!hasActiveChild && !(session?.hasActiveDeviceState ?? false)) {
+        final s = _activeSessions.remove(trackKey);
+        if (s != null) {
+          await s.stop();
+        }
+      }
+    } finally {
+      _closingBrowserIps.remove(trackKey);
+      notifyListeners();
     }
-
-    notifyListeners();
   }
 
   /// Đóng riêng mobile device / giả lập của IP hoặc nhân vật mà không làm mất hầm SOCKS5 nếu trình duyệt vẫn đang chạy
   Future<void> closeDeviceForIp(String ip, {String? entryKey}) async {
-    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
-        ? entryKey.trim()
-        : ip.trim();
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    final cleanIp = extractCleanIp(trackKey);
+
     _closingDeviceIps.add(trackKey);
+    _manuallyDetachedDeviceKeys.add(trackKey);
     notifyListeners();
 
     try {
@@ -3665,7 +4510,8 @@ for root, _, files in os.walk(target_dir):
       final port = session?.emulatorPort;
       final remoteAddr = session?.remoteDeviceAddress;
       final boundAdbSerial = session?.adbDeviceSerial;
-      final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+      final isStillBooting = session?.isDeviceBooting ?? false;
+      final personaProfile = PersonaService().getPersona(trackKey);
       final customAvdName = personaProfile?.avdName?.trim();
 
       if (remoteAddr != null) {
@@ -3676,43 +4522,79 @@ for root, _, files in os.walk(target_dir):
       }
 
       // 1. Xử lý đóng hoặc gỡ gắn kết giả lập LDPlayer / thiết bị ADB Android Studio
-      if (boundAdbSerial != null && boundAdbSerial.isNotEmpty) {
-        try {
-          final adbBin = await _findAdbExecutable();
-          await Process.run(adbBin, ['-s', boundAdbSerial, 'shell', 'sync'])
-              .timeout(const Duration(seconds: 2));
-          await clearAdbGlobalProxy(boundAdbSerial);
-          if (session?.adbReversePort != null) {
-            await Process.run(
-              adbBin,
-              ['-s', boundAdbSerial, 'reverse', '--remove', 'tcp:${session!.adbReversePort}'],
-            ).timeout(const Duration(seconds: 2));
-          }
-        } catch (_) {}
+      if ((boundAdbSerial != null && boundAdbSerial.isNotEmpty) ||
+          session?.ldPlayerIndex != null) {
+        if (!isStillBooting && boundAdbSerial != null && boundAdbSerial.isNotEmpty) {
+          try {
+            final adbBin = await _findExistingAdbForDiscovery();
+            if (adbBin != null) {
+              await Process.run(
+                adbBin,
+                ['-s', boundAdbSerial, 'shell', 'sync'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(milliseconds: 1200));
+              await clearAdbGlobalProxy(boundAdbSerial);
+              if (session?.adbReversePort != null) {
+                await Process.run(
+                  adbBin,
+                  ['-s', boundAdbSerial, 'reverse', '--remove', 'tcp:${session!.adbReversePort}'],
+                  stdoutEncoding: null,
+                  stderrEncoding: null,
+                ).timeout(const Duration(milliseconds: 1200));
+              }
+            }
+          } catch (_) {}
+        }
 
-        final ldIdx = session?.ldPlayerIndex ?? LdPlayerAdbParser.parseLdPlayerIndex(customAvdName);
+        int? ldIdx = session?.ldPlayerIndex ?? LdPlayerAdbParser.parseLdPlayerIndex(customAvdName);
+        if (ldIdx == null && boundAdbSerial != null) {
+          final inferred = LdPlayerAdbParser.inferLdPlayerIndexFromSerial(boundAdbSerial);
+          if (inferred != null && await LdPlayerService().findInstallation() != null) {
+            final liveInstances = await LdPlayerService().queryLiveInstancesFromConsole();
+            if (liveInstances == null ||
+                liveInstances.any((inst) => inst.index == inferred && inst.isRunning)) {
+              ldIdx = inferred;
+            }
+          }
+        }
+
         if (ldIdx != null) {
           try {
             await LdPlayerService().quitVm(ldIdx);
+          } catch (_) {}
+        } else if (boundAdbSerial != null && boundAdbSerial.startsWith('emulator-')) {
+          try {
+            final adbBin = await _findExistingAdbForDiscovery();
+            if (adbBin != null) {
+              await Process.run(
+                adbBin,
+                ['-s', boundAdbSerial, 'emu', 'kill'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+            }
           } catch (_) {}
         }
 
         session?.adbDeviceSerial = null;
         session?.ldPlayerIndex = null;
         session?.adbReversePort = null;
+        session?.isDeviceBooting = false;
         session?.deviceLaunchedAt = null;
       } else {
         // 2. Xử lý tắt máy ảo Android Studio AVD truyền thống
-        final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final sanitizedIp = cleanIp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final personaAvdName = 'Pixel_10_Pro_persona_$sanitizedIp';
-        final expectedNameAvd = generatePersonaAvdName(ip: ip, personaName: personaProfile?.name);
+        final expectedNameAvd =
+            generatePersonaAvdName(ip: cleanIp, personaName: personaProfile?.name);
         final targetAvd = (customAvdName != null &&
                 customAvdName.isNotEmpty &&
                 !LdPlayerAdbParser.isExternalEmulatorId(customAvdName))
             ? customAvdName
             : (expectedNameAvd.isNotEmpty ? expectedNameAvd : personaAvdName);
         final activePort = port ??
-            (trackKey == ip
+            (trackKey == cleanIp
                 ? (_findRunningConsolePortForAvd(targetAvd) ??
                     _findRunningConsolePortForAvd(expectedNameAvd) ??
                     _findRunningConsolePortForAvd(personaAvdName))
@@ -3721,8 +4603,15 @@ for root, _, files in os.walk(target_dir):
         if (activePort != null) {
           final serial = 'emulator-$activePort';
           try {
-            final adbBin = await _findAdbExecutable();
-            await Process.run(adbBin, ['-s', serial, 'shell', 'sync']);
+            final adbBin = await _findExistingAdbForDiscovery();
+            if (adbBin != null) {
+              await Process.run(
+                adbBin,
+                ['-s', serial, 'shell', 'sync'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+            }
           } catch (_) {}
           try {
             await clearAdbGlobalProxy(serial);
@@ -3733,73 +4622,72 @@ for root, _, files in os.walk(target_dir):
           try {
             await _gracefulKillEmulatorViaConsole(activePort);
           } catch (_) {}
-          for (int i = 0; i < 15; i++) {
-            await Future.delayed(const Duration(milliseconds: 100));
-            if (!_isDeviceProcessAliveForIp(ip, entryKey: trackKey)) break;
+          final devProc = session?.deviceProcess;
+          if (devProc != null) {
+            try {
+              await devProc.exitCode.timeout(const Duration(milliseconds: 1200));
+            } catch (_) {}
           }
         }
       }
 
-      if (session?.deviceProcess != null) {
-        try {
-          session!.deviceProcess!.kill();
-        } catch (_) {}
-        session?.deviceProcess = null;
-      }
-
-      if (session?.httpBridgeProcess != null) {
-        try {
-          session!.httpBridgeProcess!.kill(ProcessSignal.sigkill);
-        } catch (_) {}
-        session?.httpBridgeProcess = null;
-      }
-
-      if (session?.httpBridgeServer != null) {
-        try {
-          await session!.httpBridgeServer!.close();
-        } catch (_) {}
-        session?.httpBridgeServer = null;
-      }
-
-      session?.emulatorPort = null;
-
-      // Xóa file metadata device_<trackKey>.json nếu có
-      try {
-        final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-        final homeDir = Platform.environment['USERPROFILE'] ??
-            Platform.environment['HOME'] ??
-            Directory.systemTemp.path;
-        final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedTrackKey.json'));
-        if (metaFile.existsSync()) metaFile.deleteSync();
-      } catch (_) {}
-
-      // Chỉ cưỡng bức pkill -9 nếu tiến trình AVD chuẩn vẫn còn kẹt sau graceful shutdown
-      if (trackKey == ip && !Platform.isWindows) {
-        try {
-          final sanitizedIp = ip.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-          if (_isDeviceProcessAliveForIp(ip, entryKey: trackKey)) {
-            await Process.run('pkill', ['-9', '-f', 'device_profiles/ip_$sanitizedIp']);
-            await Process.run('pkill', ['-9', '-f', 'persona_$sanitizedIp']);
+      if (session != null) {
+        final devProc = session.deviceProcess;
+        session.deviceProcess = null;
+        if (devProc != null) {
+          if (Platform.isWindows) {
+            try {
+              await Process.run(
+                'taskkill',
+                ['/PID', devProc.pid.toString(), '/T', '/F'],
+                stdoutEncoding: null,
+                stderrEncoding: null,
+              ).timeout(const Duration(seconds: 2));
+            } catch (_) {
+              try {
+                devProc.kill();
+              } catch (_) {}
+            }
+          } else {
+            try {
+              devProc.kill();
+            } catch (_) {}
           }
+        }
+        await _clearSessionDeviceFields(trackKey, session);
+      } else {
+        try {
+          final sanitizedTrackKey = trackKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+          final homeDir = Platform.environment['USERPROFILE'] ??
+              Platform.environment['HOME'] ??
+              Directory.systemTemp.path;
+          final metaFile = File(p.join(homeDir, '.agent_mxh_auto', 'tmp', 'device_$sanitizedTrackKey.json'));
+          if (metaFile.existsSync()) metaFile.deleteSync();
+        } catch (_) {}
+      }
+
+      if (trackKey == cleanIp && !Platform.isWindows) {
+        try {
+          final sanitizedIp = cleanIp.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+          await Process.run('pkill', ['-9', '-f', 'device_profiles/ip_$sanitizedIp']);
+          await Process.run('pkill', ['-9', '-f', 'persona_$sanitizedIp']);
         } catch (_) {}
       }
 
       // Nếu browser cũng không còn chạy thì giải phóng hoàn toàn session SOCKS5
-      final hasActiveChild = trackKey == ip &&
-          _activeSessions.keys.any(
-            (k) =>
-                k.startsWith('$ip##') &&
-                (_isSystemProcessAliveForIp(ip, entryKey: k) ||
-                    _isDeviceProcessAliveForIp(ip, entryKey: k)),
+      final hasActiveChild = trackKey == cleanIp &&
+          _activeSessions.entries.any(
+            (e) =>
+                e.key.startsWith('$cleanIp##') &&
+                (e.value.hasActiveBrowserState || e.value.hasActiveDeviceState),
           );
-      if (!hasActiveChild && !_isSystemProcessAliveForIp(ip, entryKey: trackKey)) {
+      if (!hasActiveChild && !(session?.hasActiveBrowserState ?? false)) {
         final s = _activeSessions.remove(trackKey);
         if (s != null) {
           await s.stop();
         }
       }
     } finally {
-      await Future.delayed(const Duration(milliseconds: 300));
       _closingDeviceIps.remove(trackKey);
       notifyListeners();
     }
@@ -3807,11 +4695,8 @@ for root, _, files in os.walk(target_dir):
 
   /// Tìm serial ADB (ví dụ emulator-5554 hoặc IP:port) đang chạy cho một IP / nhân vật cụ thể
   Future<String?> getRunningDeviceSerialForIp(String ip, {String? entryKey}) async {
-    final cleanIp = ip.contains('##') ? ip.split('##').first : ip;
-    final trackKey = (entryKey != null && entryKey.trim().isNotEmpty)
-        ? entryKey.trim()
-        : ip.trim();
-    final session = _activeSessions[trackKey] ?? _activeSessions[cleanIp];
+    final trackKey = normalizeTrackKey(ip, entryKey: entryKey);
+    final session = _activeSessions[trackKey];
     if (session?.adbDeviceSerial != null && session!.adbDeviceSerial!.isNotEmpty) {
       return session.adbDeviceSerial;
     }
@@ -3822,7 +4707,12 @@ for root, _, files in os.walk(target_dir):
       return 'emulator-${session!.emulatorPort}';
     }
 
-    final personaProfile = PersonaService().getPersona(trackKey) ?? PersonaService().getPersona(cleanIp);
+    if (PersonaService().allPersonas.isEmpty) {
+      try {
+        await PersonaService().loadSavedPersonas();
+      } catch (_) {}
+    }
+    final personaProfile = PersonaService().getPersona(trackKey);
     final customAvdName = personaProfile?.avdName?.trim();
 
     // Nếu nhân vật gắn giả lập LDPlayer hoặc ADB trong Android Studio đang mở sẵn
@@ -4283,14 +5173,18 @@ for root, _, files in os.walk(target_dir):
     try {
       final profilesRoot = getBrowserProfilesDirectory();
 
-      // 1. Quét các thư mục profile
+      // 1. Quét các thư mục profile (chỉ mở khóa các thư mục có lock bị kẹt mà trình duyệt đã tắt)
       if (profilesRoot.existsSync()) {
         final entities = profilesRoot.listSync(followLinks: false);
         for (final entity in entities) {
           if (entity is Directory) {
+            if (_isIsolatedProfileDirLocked(entity)) {
+              // Trình duyệt của profile này đang thực sự mở hoạt động -> giữ nguyên lock sống
+              continue;
+            }
             bool profileRepaired = false;
             for (final subEntity in entity.listSync(followLinks: false)) {
-              final base = subEntity.path.split(Platform.isWindows ? r'\' : '/').last;
+              final base = p.basename(subEntity.path);
               if (base.startsWith('Singleton')) {
                 try {
                   final type = FileSystemEntity.typeSync(subEntity.path, followLinks: false);
@@ -4339,49 +5233,14 @@ for root, _, files in os.walk(target_dir):
 
             if (profileRepaired) {
               fixedProfiles++;
-              final profileName = entity.path.split(Platform.isWindows ? r'\' : '/').last;
+              final profileName = p.basename(entity.path);
               details.add('Đã mở khóa profile: $profileName');
             }
           }
         }
       }
 
-      // 2. Dọn dẹp tiến trình zombie kẹt ngầm (trên Linux)
-      if (Platform.isLinux) {
-        try {
-          final procDir = Directory('/proc');
-          if (procDir.existsSync()) {
-            final myPid = pid;
-            for (final entity in procDir.listSync(followLinks: false)) {
-              final baseName = entity.path.split('/').last;
-              final p = int.tryParse(baseName);
-              if (p == null || p == myPid) continue;
-              try {
-                final cmdFile = File('${entity.path}/cmdline');
-                if (cmdFile.existsSync()) {
-                  final bytes = cmdFile.readAsBytesSync();
-                  final cmd = String.fromCharCodes(bytes);
-                  if (cmd.contains('browser_profiles/ip_') && cmd.contains('chrome') && !cmd.contains('agent_mxh_auto')) {
-                    // Kiểm tra xem tiến trình này có còn thuộc session active trong app không
-                    bool isInSession = false;
-                    for (final s in _activeSessions.values) {
-                      if (s.browserProcess?.pid == p) {
-                        isInSession = true;
-                        break;
-                      }
-                    }
-                    if (!isInSession) {
-                      Process.killPid(p);
-                      killedZombies++;
-                    }
-                  }
-                }
-              } catch (_) {}
-            }
-          }
-        } catch (_) {}
-      }
-
+      unawaited(refreshRuntimeStates());
       notifyListeners();
 
       return {

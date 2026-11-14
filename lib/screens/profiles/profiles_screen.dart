@@ -43,14 +43,22 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   @override
   void initState() {
     super.initState();
+    _socks5Service.addListener(_onSocks5StateChanged);
     HardwareKeyboard.instance.addHandler(_handleHardwareKey);
     _loadPersonas();
   }
 
   @override
   void dispose() {
+    _socks5Service.removeListener(_onSocks5StateChanged);
     HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
     super.dispose();
+  }
+
+  void _onSocks5StateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   bool _handleHardwareKey(KeyEvent event) {
@@ -62,6 +70,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
   Future<void> _loadPersonas({bool forceReload = false}) async {
     final saved = await _personaService.loadSavedPersonas(forceReload: forceReload);
+    unawaited(_socks5Service.refreshRuntimeStates());
     List<String> avdList = [];
     try {
       avdList = await _socks5Service.getAvailableAvds();
@@ -2752,6 +2761,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
                                   try {
                                     await _personaService.updatePersona(updated);
+                                    unawaited(_socks5Service.refreshRuntimeStates());
                                     if (mounted) {
                                       setState(() {
                                         _personas[updated.effectiveEntryKey] = updated;
@@ -2813,6 +2823,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   @override
   Widget build(BuildContext context) {
     final serverProvider = context.watch<ServerProvider>();
+    final socks5 = context.watch<Socks5ProxyService>();
     final servers = serverProvider.servers;
     final selectedServer = serverProvider.selectedServer;
 
@@ -3074,7 +3085,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                         itemCount: allIpCards.length,
                         itemBuilder: (context, idx) {
                           final item = allIpCards[idx];
-                          return _buildContactCard(item);
+                          return _buildContactCard(item, socks5);
                         },
                       );
                     },
@@ -3086,8 +3097,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   }
 
   // Khung danh thiếp Contact Card cho từng IP
-  Widget _buildContactCard(_ContactIpItem item) {
-    final socks5 = context.watch<Socks5ProxyService>();
+  Widget _buildContactCard(_ContactIpItem item, Socks5ProxyService socks5) {
     // Trang thai browser cua CHINH card nay (card phu co entryKey rieng dang 'ip##n')
     final isBrowserRunning = socks5.isBrowserRunningForIp(item.ip, entryKey: item.entryKey);
     final isSubProfile = item.entryKey != null;
@@ -3795,22 +3805,30 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                 // 1. NÚT MỞ / ĐÓNG TRÌNH DUYỆT (BROWSER)
                 Expanded(
                   child: () {
-                    final isOpening = _openingIps.contains(item.ip);
-                    final isClosing = _closingIps.contains(item.ip);
+                    final browserCardKey = item.entryKey ?? item.ip;
+                    final isOpening = _openingIps.contains(browserCardKey);
+                    final isClosing = _closingIps.contains(browserCardKey) ||
+                        socks5.isClosingBrowser(item.ip, entryKey: item.entryKey);
                     final isBusy = isOpening || isClosing;
 
-                    if (isBrowserRunning) {
+                    if (isBrowserRunning || isClosing) {
                       return ElevatedButton.icon(
                         onPressed: isBusy
                             ? null
                             : () async {
                                 setState(() {
-                                  _closingIps.add(item.ip);
+                                  _closingIps.add(browserCardKey);
                                 });
                                 try {
-                                  await _socks5Service.closeBrowserForIp(item.ip, entryKey: item.entryKey);
+                                  await _socks5Service.closeBrowserForIp(
+                                    item.ip,
+                                    entryKey: item.entryKey ?? persona?.effectiveEntryKey,
+                                  );
                                   if (mounted) {
-                                    AppToast.info(context, 'Đã đóng trình duyệt cho ${item.ip}');
+                                    AppToast.info(
+                                      context,
+                                      'Đã đóng trình duyệt cho ${persona?.name ?? item.ip}',
+                                    );
                                   }
                                 } catch (e) {
                                   if (mounted) {
@@ -3819,7 +3837,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                 } finally {
                                   if (mounted) {
                                     setState(() {
-                                      _closingIps.remove(item.ip);
+                                      _closingIps.remove(browserCardKey);
                                     });
                                   }
                                 }
@@ -3854,9 +3872,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                           ? null
                           : () async {
                               setState(() {
-                                _openingIps.add(item.ip);
+                                _openingIps.add(browserCardKey);
                               });
-                              AppToast.info(context, 'Đang mở trình duyệt cho ${item.ip}...');
+                              AppToast.info(
+                                context,
+                                'Đang mở trình duyệt cho ${persona?.name ?? item.ip}...',
+                              );
                               try {
                                 await _socks5Service.launchBrowserWithSocks5(
                                   server: item.server,
@@ -3865,7 +3886,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   entryKey: item.entryKey ?? persona?.effectiveEntryKey,
                                 );
                                 if (mounted) {
-                                  AppToast.success(context, 'Đã mở trình duyệt qua ${item.ip}');
+                                  AppToast.success(
+                                    context,
+                                    'Đã mở trình duyệt cho ${persona?.name ?? item.ip}',
+                                  );
                                 }
                               } catch (e) {
                                 if (mounted) {
@@ -3874,7 +3898,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                               } finally {
                                 if (mounted) {
                                   setState(() {
-                                    _openingIps.remove(item.ip);
+                                    _openingIps.remove(browserCardKey);
                                   });
                                 }
                               }
@@ -3912,13 +3936,14 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                   child: () {
                     final deviceCardKey = item.entryKey ?? item.ip;
                     final isOpeningDevice = _openingDeviceIps.contains(deviceCardKey);
-                    final isClosingDevice = _closingDeviceIps.contains(deviceCardKey);
+                    final isClosingDevice = _closingDeviceIps.contains(deviceCardKey) ||
+                        socks5.isClosingDevice(item.ip, entryKey: item.entryKey);
                     final isDeviceBusy = isOpeningDevice || isClosingDevice;
                     final targetRemoteDevice = (persona != null && persona.useExternalDevice && (persona.externalDeviceAddress?.trim().isNotEmpty ?? false))
                         ? persona.externalDeviceAddress!.trim()
                         : null;
 
-                    if (isDeviceRunning) {
+                    if (isDeviceRunning || isClosingDevice) {
                       return ElevatedButton.icon(
                         onPressed: isDeviceBusy
                             ? null

@@ -57,7 +57,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted && _personaService.activeScopeIps.isNotEmpty && _selectedPersonasScope.isEmpty) {
           setState(() {
             _selectedPersonasScope = map.values
-                .where((p) => _personaService.activeScopeIps.contains(p.ip))
+                .where((p) => _personaService.activeScopeIps.contains(p.effectiveEntryKey))
                 .toList();
           });
         }
@@ -394,10 +394,7 @@ class _ChatScreenState extends State<ChatScreen> {
     String? scopePayload;
     final buffer = StringBuffer();
     if (_selectedPersonasScope.isNotEmpty) {
-      buffer.writeln('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH (SCOPE PERSONAS) ===');
-      for (final p in _selectedPersonasScope) {
-        buffer.writeln('- IP: ${p.ip} | Họ tên: ${p.name} | Tuổi: ${p.age} | Giới tính: ${p.gender} | Bio: ${p.bio}');
-      }
+      buffer.writeln(_formatScopePersonasSection(_selectedPersonasScope));
       buffer.writeln();
     }
 
@@ -443,6 +440,17 @@ class _ChatScreenState extends State<ChatScreen> {
     _safeScrollToBottom();
   }
 
+  String _formatScopePersonasSection(List<PersonaProfile> personas) {
+    final buf = StringBuffer();
+    buf.writeln('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH (SCOPE PERSONAS) ===');
+    for (final p in personas) {
+      buf.writeln(
+        '- ProfileKey: ${p.effectiveEntryKey} | IP: ${p.ip} | Họ tên: ${p.name} | Tuổi: ${p.age} | Giới tính: ${p.gender} | Bio: ${p.bio}',
+      );
+    }
+    return buf.toString().trimRight();
+  }
+
   void _triggerScopePicker() async {
     showDialog(
       context: context,
@@ -452,7 +460,7 @@ class _ChatScreenState extends State<ChatScreen> {
           setState(() {
             _selectedPersonasScope = selectedList;
           });
-          _personaService.setActiveScopeIps(selectedList.map((p) => p.ip));
+          _personaService.setActiveScopeIps(selectedList.map((p) => p.effectiveEntryKey));
           if (selectedList.isNotEmpty) {
             AppToast.success(context, 'Đã chọn ${selectedList.length} nhân vật cho hội thoại');
           } else {
@@ -1003,12 +1011,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
                 String? scopePayload;
                 if (_selectedPersonasScope.isNotEmpty) {
-                  final buffer = StringBuffer();
-                  buffer.writeln('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH (SCOPE PERSONAS) ===');
-                  for (final p in _selectedPersonasScope) {
-                    buffer.writeln('- IP: ${p.ip} | Họ tên: ${p.name} | Tuổi: ${p.age} | Giới tính: ${p.gender} | Bio: ${p.bio}');
-                  }
-                  scopePayload = buffer.toString().trim();
+                  scopePayload = _formatScopePersonasSection(_selectedPersonasScope);
                 }
 
                 final targetPlatformPrompt = isDeviceMode
@@ -1051,10 +1054,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onPressed: () {
         final buffer = StringBuffer();
         if (_selectedPersonasScope.isNotEmpty) {
-          buffer.writeln('=== DANH SÁCH NHÂN VẬT ĐƯỢC CHỈ ĐỊNH (SCOPE PERSONAS) ===');
-          for (final p in _selectedPersonasScope) {
-            buffer.writeln('- IP: ${p.ip} | Họ tên: ${p.name} | Tuổi: ${p.age} | Giới tính: ${p.gender} | Bio: ${p.bio}');
-          }
+          buffer.writeln(_formatScopePersonasSection(_selectedPersonasScope));
           buffer.writeln();
         }
         if (_isDeviceExecutionMode) {
@@ -1179,9 +1179,13 @@ class _ChatScreenState extends State<ChatScreen> {
                               GestureDetector(
                                 onTap: () {
                                   setState(() {
-                                    _selectedPersonasScope.removeWhere((item) => item.ip == p.ip);
+                                    _selectedPersonasScope.removeWhere(
+                                      (item) => item.effectiveEntryKey == p.effectiveEntryKey,
+                                    );
                                   });
-                                  _personaService.setActiveScopeIps(_selectedPersonasScope.map((e) => e.ip));
+                                  _personaService.setActiveScopeIps(
+                                    _selectedPersonasScope.map((e) => e.effectiveEntryKey),
+                                  );
                                 },
                                 child: const Icon(Icons.close_rounded, size: 14, color: AppColors.textMuted),
                               ),
@@ -1775,7 +1779,7 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
   final PersonaService _personaService = PersonaService();
   final TextEditingController _searchController = TextEditingController();
   List<PersonaProfile> _allPersonas = [];
-  final Set<String> _selectedIps = {};
+  final Set<String> _selectedKeys = {};
   bool _isLoading = true;
 
   int _currentPage = 1;
@@ -1784,8 +1788,8 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
   @override
   void initState() {
     super.initState();
-    final initialIps = widget.selectedPersonas.map((p) => p.ip);
-    _selectedIps.addAll(initialIps);
+    final initialKeys = widget.selectedPersonas.map((p) => p.effectiveEntryKey);
+    _selectedKeys.addAll(initialKeys);
     _loadPersonas();
   }
 
@@ -1801,6 +1805,7 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
     if (mounted) {
       setState(() {
         _allPersonas = map.values.toList();
+        _selectedKeys.retainWhere((k) => map.containsKey(k));
         _isLoading = false;
       });
     }
@@ -1812,17 +1817,19 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
     return _allPersonas.where((p) {
       return p.name.toLowerCase().contains(query) ||
           p.ip.toLowerCase().contains(query) ||
+          p.effectiveEntryKey.toLowerCase().contains(query) ||
           p.gender.toLowerCase().contains(query) ||
           p.bio.toLowerCase().contains(query);
     }).toList();
   }
 
   void _togglePersona(PersonaProfile p) {
+    final key = p.effectiveEntryKey;
     setState(() {
-      if (_selectedIps.contains(p.ip)) {
-        _selectedIps.remove(p.ip);
+      if (_selectedKeys.contains(key)) {
+        _selectedKeys.remove(key);
       } else {
-        _selectedIps.add(p.ip);
+        _selectedKeys.add(key);
       }
     });
   }
@@ -1831,7 +1838,7 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
     final filtered = _filteredPersonas;
     setState(() {
       for (final p in filtered) {
-        _selectedIps.add(p.ip);
+        _selectedKeys.add(p.effectiveEntryKey);
       }
     });
   }
@@ -1845,21 +1852,21 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
 
     setState(() {
       for (final p in pageItems) {
-        _selectedIps.add(p.ip);
+        _selectedKeys.add(p.effectiveEntryKey);
       }
     });
   }
 
   void _clearAll() {
     setState(() {
-      _selectedIps.clear();
+      _selectedKeys.clear();
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredPersonas;
-    final totalSelected = _selectedIps.length;
+    final totalSelected = _selectedKeys.length;
     final totalPages = (filtered.length / _pageSize).ceil();
     final safePage = totalPages == 0 ? 1 : _currentPage.clamp(1, totalPages);
     final startIndex = (safePage - 1) * _pageSize;
@@ -2042,7 +2049,7 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
                           separatorBuilder: (context, index) => const Divider(height: 1, color: AppColors.borderDark),
                           itemBuilder: (context, idx) {
                             final persona = pageItems[idx];
-                            final isSelected = _selectedIps.contains(persona.ip);
+                            final isSelected = _selectedKeys.contains(persona.effectiveEntryKey);
 
                             return InkWell(
                               onTap: () => _togglePersona(persona),
@@ -2220,7 +2227,9 @@ class _ScopePickerDialogState extends State<_ScopePickerDialog> {
         ),
         ElevatedButton(
           onPressed: () {
-            final selected = _allPersonas.where((p) => _selectedIps.contains(p.ip)).toList();
+            final selected = _allPersonas
+                .where((p) => _selectedKeys.contains(p.effectiveEntryKey))
+                .toList();
             widget.onSelect(selected);
             Navigator.pop(context);
           },
