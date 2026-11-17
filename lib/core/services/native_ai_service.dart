@@ -44,7 +44,8 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
 
 4. TẬP TRUNG TÁC VỤ TỰ ĐỘNG HÓA MXH:
    - Sử dụng các công cụ nội bộ để tương tác trực tiếp với trình duyệt cục bộ.
-   - BẮT BUỘC: Sau khi gọi hoặc thực thi bất kỳ công cụ (tool/function) nào, bạn PHẢI luôn luôn có câu trả lời bằng văn bản gửi cho người dùng để trình bày chi tiết kết quả, giải thích các bước đã thực hiện hoặc đưa ra phân tích tiếp theo. Tuyệt đối KHÔNG được kết thúc cuộc hội thoại trong im lặng hoặc trả về nội dung rỗng.
+   - BẮT BUỘC: Sau khi gọi hoặc thực thi bất kỳ công cụ (tool/function) nào, bạn PHẢI luôn luôn có câu trả lời bằng văn bản gửi cho người dùng để trình bày kết quả tự nhiên, ngắn gọn. Tuyệt đối KHÔNG được kết thúc cuộc hội thoại trong im lặng hoặc trả về nội dung rỗng.
+   - TUYỆT ĐỐI KHÔNG in danh sách log kỹ thuật kiểu "Đã thực hiện xong các tác vụ:", không liệt kê tên hàm công cụ nội bộ (như `get_connected_devices`, `execute_adb_command`, `execute_terminal_command`, `list_profiles`) hay chuỗi JSON/lệnh shell thô vào câu trả lời cho người dùng.
 
 5. QUY TẮC ĐỌC BÀI BÁO & XEM VIDEO TRÊN WEBSITE (AGENT RULES):
    - Khi có yêu cầu đọc bài báo, xem tin tức hoặc xem video trên website bất kỳ:
@@ -501,6 +502,7 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         ];
 
         String finalReply = '';
+        final streamedBuffer = StringBuffer();
         final allExecutedTools = <ToolExecutionItem>[];
         int turnCount = 0;
         const maxTurns = 20;
@@ -560,6 +562,7 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                       if (delta['content'] != null) {
                         final token = delta['content'].toString();
                         stepContent += token;
+                        streamedBuffer.write(token);
                         onToken(token);
                       }
 
@@ -1255,32 +1258,96 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
 
             // Add spacing token if there was narration
             if (stepContent.isNotEmpty) {
+              streamedBuffer.write('\n\n');
               onToken('\n\n');
             }
           } else {
             // Finished generation without more tools
-            finalReply = stepContent;
+            finalReply = streamedBuffer.toString().trim();
+            if (finalReply.isEmpty) {
+              finalReply = stepContent.trim();
+            }
             break;
           }
         }
 
-        // Final reply fallback if not captured
-        if (finalReply.isEmpty && messages.isNotEmpty && messages.last['role'] == 'assistant') {
-          finalReply = messages.last['content']?.toString() ?? '';
+        // Nếu vòng lặp dừng ngay sau khi chạy tool (ví dụ chạm maxTurns) hoặc chưa có lời kết tự nhiên,
+        // gọi 1 lượt tổng hợp cuối cùng không đính kèm tools để Agent trả lời tự nhiên thay vì in log kỹ thuật.
+        if (!isCancelled &&
+            allExecutedTools.isNotEmpty &&
+            (finalReply.isEmpty || (messages.isNotEmpty && messages.last['role'] == 'tool'))) {
+          try {
+            onStatus('Đang tổng hợp kết quả...');
+            final summaryMessages = <Map<String, dynamic>>[
+              ...messages,
+              {
+                'role': 'user',
+                'content':
+                    'Hãy báo cáo ngắn gọn kết quả thực hiện vừa rồi bằng ngôn ngữ tự nhiên cho người dùng. Tuyệt đối không liệt kê tên hàm công cụ kỹ thuật hay câu lệnh/JSON thô.',
+              },
+            ];
+            final summaryClient = http.Client();
+            final summaryReq = http.Request('POST', Uri.parse('$baseUrl/chat/completions'));
+            summaryReq.headers.addAll({
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
+            });
+            summaryReq.body = jsonEncode({
+              'model': targetModel,
+              'messages': summaryMessages,
+              'stream': true,
+            });
+            final summaryResp = await summaryClient.send(summaryReq);
+            if (summaryResp.statusCode == 200) {
+              final summaryCompleter = Completer<void>();
+              summaryResp.stream
+                  .transform(utf8.decoder)
+                  .transform(const LineSplitter())
+                  .listen(
+                (line) {
+                  final trimmed = line.trim();
+                  if (!trimmed.startsWith('data:') || trimmed == 'data: [DONE]') return;
+                  try {
+                    final data = jsonDecode(trimmed.substring(5).trim());
+                    final choices = data['choices'] as List<dynamic>?;
+                    if (choices != null && choices.isNotEmpty) {
+                      final delta = choices[0]['delta'] as Map<String, dynamic>?;
+                      final token = delta?['content']?.toString();
+                      if (token != null && token.isNotEmpty) {
+                        streamedBuffer.write(token);
+                        onToken(token);
+                      }
+                    }
+                  } catch (_) {}
+                },
+                onError: (_) {
+                  if (!summaryCompleter.isCompleted) summaryCompleter.complete();
+                },
+                onDone: () {
+                  if (!summaryCompleter.isCompleted) summaryCompleter.complete();
+                  summaryClient.close();
+                },
+                cancelOnError: true,
+              );
+              await summaryCompleter.future;
+            } else {
+              summaryClient.close();
+            }
+          } catch (_) {}
         }
 
-        // If tools were executed but AI didn't emit text narrative, synthesize clear report
+        finalReply = ChatMessageModel.stripRawToolSummary(streamedBuffer.toString().trim());
+
+        // Final reply fallback if not captured
+        if (finalReply.isEmpty && messages.isNotEmpty && messages.last['role'] == 'assistant') {
+          finalReply = ChatMessageModel.stripRawToolSummary(
+            messages.last['content']?.toString().trim() ?? '',
+          );
+        }
+
         if (finalReply.isEmpty && allExecutedTools.isNotEmpty) {
-          final buffer = StringBuffer();
-          buffer.writeln('Đã thực hiện xong các tác vụ:');
-          for (final t in allExecutedTools) {
-            buffer.writeln('- **${t.command}**');
-            if (t.output.isNotEmpty) {
-              final cleanOut = t.output.length > 200 ? '${t.output.substring(0, 200)}...' : t.output;
-              buffer.writeln('  > $cleanOut');
-            }
-          }
-          finalReply = buffer.toString().trim();
+          finalReply = _buildCleanToolFallback(allExecutedTools);
           onToken(finalReply);
         } else if (finalReply.isEmpty) {
           finalReply = 'Đã hoàn tất thao tác.';
@@ -1310,6 +1377,31 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     };
 
     return controller.stream.listen((_) {});
+  }
+
+  /// Tạo phản hồi ngắn gọn, tự nhiên khi AI không sinh thêm văn bản mà không lộ tên hàm/log kỹ thuật
+  String _buildCleanToolFallback(List<ToolExecutionItem> executedTools) {
+    const friendlyTools = {
+      'open_profile_browser',
+      'close_profile_browser',
+      'open_profile_device',
+      'close_profile_device',
+      'fast_social_action',
+      'save_automation_macro',
+    };
+    final messages = <String>[];
+    for (final item in executedTools) {
+      if (friendlyTools.contains(item.tool)) {
+        final out = item.output.trim();
+        if (out.isNotEmpty && !out.startsWith('{') && !out.startsWith('[') && !messages.contains(out)) {
+          messages.add(out);
+        }
+      }
+    }
+    if (messages.isNotEmpty) {
+      return messages.join('\n');
+    }
+    return 'Đã hoàn tất thực hiện yêu cầu.';
   }
 
   bool _isCliModel(String model) {

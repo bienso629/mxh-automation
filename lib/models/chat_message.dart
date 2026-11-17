@@ -42,16 +42,34 @@ class ChatMessageModel {
     this.id,
     required this.sessionId,
     required this.role,
-    required this.content,
+    required String content,
     this.model = 'glm-5.3',
     DateTime? createdAt,
     List<ToolExecutionItem>? toolExecutions,
     List<AttachmentItem>? attachments,
     this.isStreaming = false,
     this.statusMessage,
-  })  : createdAt = createdAt ?? DateTime.now(),
+  })  : content = role == 'assistant' ? stripRawToolSummary(content) : content,
+        createdAt = createdAt ?? DateTime.now(),
         toolExecutions = toolExecutions ?? [],
         attachments = attachments ?? [];
+
+  /// Loại bỏ khối log kỹ thuật "Đã thực hiện xong các tác vụ:" khỏi nội dung phản hồi của Agent
+  static String stripRawToolSummary(String text) {
+    if (text.isEmpty || !text.contains('Đã thực hiện xong các tác vụ:')) {
+      return text;
+    }
+    final cleaned = text
+        .replaceFirst(
+          RegExp(r'\n*Đã thực hiện xong các tác vụ:\s*(?:\n[\s\S]*)?$'),
+          '',
+        )
+        .trim();
+    if (cleaned.isNotEmpty) {
+      return cleaned;
+    }
+    return 'Đã hoàn tất thực hiện yêu cầu.';
+  }
 
   factory ChatMessageModel.fromJson(Map<String, dynamic> json) {
     List<AttachmentItem> atts = [];

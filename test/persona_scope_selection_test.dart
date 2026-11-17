@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:agent_mxh_auto/models/persona_profile_model.dart';
+import 'package:agent_mxh_auto/models/chat_message.dart';
 import 'package:agent_mxh_auto/core/services/persona_service.dart';
 import 'package:agent_mxh_auto/core/services/socks5_proxy_service.dart';
 
@@ -107,6 +108,41 @@ void main() {
       final socks5 = Socks5ProxyService();
       expect(socks5.isBrowserRunningForIp('127.0.0.1##3'), isFalse);
       expect(socks5.isDeviceRunningForIp('127.0.0.1##3'), isFalse);
+    });
+
+    test('ChatMessageModel loai bo khoi log ky thuat "Da thuc hien xong cac tac vu:" khoi cau tra loi cua Agent', () {
+      const rawMixed = '''Trang web đã mở trong trình duyệt Chrome trên cả 2 thiết bị, nhưng nội dung web chưa hiển thị.
+
+Chưa tìm thấy nút nào khớp.
+
+Đã thực hiện xong các tác vụ:
+- **get_connected_devices**
+  > [{"serial":"emulator-5554","state":"device"}]
+- **execute_adb_command: shell am start -a android.intent.action.VIEW**
+  > Starting: Intent { act=android.intent.action.VIEW }''';
+
+      final msgMixed = ChatMessageModel(
+        sessionId: 's1',
+        role: 'assistant',
+        content: rawMixed,
+      );
+      expect(msgMixed.content.contains('Đã thực hiện xong các tác vụ:'), isFalse);
+      expect(msgMixed.content.contains('get_connected_devices'), isFalse);
+      expect(msgMixed.content.contains('execute_adb_command'), isFalse);
+      expect(
+        msgMixed.content,
+        'Trang web đã mở trong trình duyệt Chrome trên cả 2 thiết bị, nhưng nội dung web chưa hiển thị.\n\nChưa tìm thấy nút nào khớp.',
+      );
+
+      const rawOnlyDump = '''Đã thực hiện xong các tác vụ:
+- **get_connected_devices**
+  > [{"serial":"emulator-5554"}]''';
+      final msgOnlyDump = ChatMessageModel(
+        sessionId: 's1',
+        role: 'assistant',
+        content: rawOnlyDump,
+      );
+      expect(msgOnlyDump.content, 'Đã hoàn tất thực hiện yêu cầu.');
     });
   });
 }
