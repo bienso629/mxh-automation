@@ -793,22 +793,42 @@ class LdPlayerService {
       }
     }
 
-    // 3. Quét các đường dẫn cài đặt phổ biến trên các ổ đĩa C..H
-    final drives = ['C', 'D', 'E', 'F', 'G', 'H'];
+    // 3. Quét các đường dẫn cài đặt phổ biến trên mọi ổ đĩa khả dụng (C..Z) và thư mục user Windows
+    final drives = [
+      'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+      'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    ];
     final subPaths = [
       r'LDPlayer\LDPlayer9',
       r'LDPlayer\LDPlayer64',
+      r'LDPlayer\LDPlayer5',
       r'LDPlayer\LDPlayer4.0',
       r'LDPlayer\LDPlayer3.0',
       r'LDPlayer9',
+      r'LDPlayer5',
       r'XuanZhi\LDPlayer9',
       r'XuanZhi\LDPlayer',
       r'ChangZhi\dnplayer2',
+      r'leidian\LDPlayer9',
       r'Program Files\LDPlayer\LDPlayer9',
+      r'Program Files\LDPlayer\LDPlayer5',
       r'Program Files\LDPlayer\LDPlayer4.0',
+      r'Program Files\XuanZhi\LDPlayer9',
       r'Program Files (x86)\LDPlayer\LDPlayer9',
+      r'Program Files (x86)\LDPlayer\LDPlayer5',
       r'Program Files (x86)\LDPlayer\LDPlayer4.0',
     ];
+
+    final localAppData = Platform.environment['LOCALAPPDATA']?.trim() ?? '';
+    if (localAppData.isNotEmpty) {
+      for (final rel in [r'LDPlayer\LDPlayer9', r'LDPlayer\LDPlayer4.0', r'XuanZhi\LDPlayer9']) {
+        final resolved = _probeInstallDir(p.join(localAppData, rel));
+        if (resolved != null) {
+          _cachedInstall = resolved;
+          return resolved;
+        }
+      }
+    }
 
     for (final d in drives) {
       if (!Directory('$d:\\').existsSync()) continue;
@@ -817,6 +837,21 @@ class LdPlayerService {
         if (resolved != null) {
           _cachedInstall = resolved;
           return resolved;
+        }
+      }
+    }
+
+    // 3b. Quét thêm Uninstall Registry (trường hợp cài vào thư mục tùy chỉnh bất kỳ)
+    for (final uninstallRoot in [
+      r'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+      r'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+      r'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+    ]) {
+      for (final subName in ['LDPlayer9', 'LDPlayer64', 'LDPlayer', 'LDPlayer4']) {
+        final regInfo = await _queryRegistryInstall('$uninstallRoot\\$subName');
+        if (regInfo != null) {
+          _cachedInstall = regInfo;
+          return regInfo;
         }
       }
     }
@@ -889,12 +924,18 @@ class LdPlayerService {
 
       for (final rawLine in out.split(RegExp(r'\r?\n'))) {
         final line = rawLine.trim();
-        final m = RegExp(r'^(InstallDir|DataDir)\s+REG_\w+\s+(.+)$', caseSensitive: false).firstMatch(line);
+        final m = RegExp(r'^(InstallDir|InstallLocation|DataDir|DisplayIcon)\s+REG_\w+\s+(.+)$', caseSensitive: false).firstMatch(line);
         if (m != null) {
           final name = m.group(1)!.toLowerCase();
-          final val = m.group(2)!.trim();
-          if (name == 'installdir') installDir = val;
-          if (name == 'datadir') dataDir = val;
+          final val = m.group(2)!.trim().replaceAll('"', '');
+          if (name == 'installdir' || name == 'installlocation') {
+            installDir = val;
+          } else if (name == 'displayicon' && (installDir == null || installDir.isEmpty)) {
+            final iconPath = val.split(',').first.trim();
+            if (iconPath.isNotEmpty) installDir = p.dirname(iconPath);
+          } else if (name == 'datadir') {
+            dataDir = val;
+          }
         }
       }
 

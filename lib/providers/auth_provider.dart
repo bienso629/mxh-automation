@@ -25,6 +25,7 @@ class AuthProvider extends ChangeNotifier {
   String? _avatar;
   String? _selectedServer = 'vn.s3';
   String? _errorMessage;
+  String _activeUserKey = '';
   List<AccountProfile> _accounts = [];
   List<String> _userGroups = [];
 
@@ -37,6 +38,7 @@ class AuthProvider extends ChangeNotifier {
   String? get avatar => _avatar;
   String get selectedServer => _selectedServer ?? 'vn.s3';
   String? get errorMessage => _errorMessage;
+  String get activeUserKey => _activeUserKey;
   List<AccountProfile> get accounts => _accounts;
   List<String> get userGroups => _userGroups;
 
@@ -150,9 +152,109 @@ class AuthProvider extends ChangeNotifier {
     checkAuthStatus();
   }
 
-  Future<void> refreshAccountsList() async {
+  Future<void> refreshAccountsList({bool notify = true}) async {
     _accounts = await _multiAccount.getAllAccounts();
-    notifyListeners();
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  /// Xác định khóa lưu trữ ổn định duy nhất (userKey) cho tài khoản.
+  /// - Tránh tạo DB rỗng mới khi người dùng lúc đăng nhập bằng email, lúc đăng nhập bằng username của CÙNG 1 tài khoản (cùng uid).
+  /// - Tránh va chạm dữ liệu khi 2 tài khoản KHÁC NHAU có cùng phần tên trước dấu '@' (vd: foo@gmail.com và foo@type.vn).
+  Future<String> _resolveCanonicalUserKey({
+    String? uid,
+    String? username,
+    String? respEmail,
+    required String typedInput,
+  }) async {
+    final cleanUid = uid?.trim() ?? '';
+    final cleanUsername = username?.trim() ?? '';
+    final cleanRespEmail = respEmail?.trim() ?? '';
+    final cleanTyped = typedInput.trim();
+    final canonicalEmail = cleanRespEmail.isNotEmpty
+        ? cleanRespEmail
+        : (cleanTyped.contains('@') ? cleanTyped : '');
+
+    // 1. Ưu tiên tái sử dụng userKey của chính tài khoản này đã lưu trong MultiAccountService
+    final matched = await _multiAccount.findMatchingAccount(
+      uid: cleanUid,
+      email: canonicalEmail.isNotEmpty ? canonicalEmail : cleanTyped,
+      username: cleanUsername,
+    );
+    if (matched != null) {
+      if (matched.userKey != null && matched.userKey!.trim().isNotEmpty) {
+        return matched.userKey!.trim();
+      }
+      final legacyFromMatched = StorageService.sanitizeUserKey(
+        (matched.email != null && matched.email!.trim().isNotEmpty)
+            ? matched.email
+            : matched.id,
+      );
+      if (legacyFromMatched.isNotEmpty && DatabaseService.hasUserDataOnDisk(legacyFromMatched)) {
+        return legacyFromMatched;
+      }
+    }
+
+    // Gom tập các khóa đang thuộc sở hữu của TÀI KHOẢN KHÁC để chống đè dữ liệu
+    final allSaved = await _multiAccount.getAllAccounts();
+    final keysOwnedByOthers = <String>{};
+    for (final acc in allSaved) {
+      final isSameUid = cleanUid.isNotEmpty && acc.uid != null && acc.uid!.trim() == cleanUid;
+      final isSameEmail = canonicalEmail.isNotEmpty &&
+          (acc.email?.trim().toLowerCase() == canonicalEmail.toLowerCase() ||
+              acc.id.trim().toLowerCase() == canonicalEmail.toLowerCase());
+      final isSameUsername = cleanUsername.isNotEmpty &&
+          acc.name?.trim().toLowerCase() == cleanUsername.toLowerCase() &&
+          (cleanUid.isEmpty || acc.uid == null || acc.uid!.isEmpty);
+      if (isSameUid || isSameEmail || isSameUsername) continue;
+
+      if (acc.userKey != null && acc.userKey!.trim().isNotEmpty) {
+        keysOwnedByOthers.add(acc.userKey!.trim());
+      }
+      final accLegacy = StorageService.sanitizeUserKey(
+        (acc.email != null && acc.email!.trim().isNotEmpty) ? acc.email : acc.id,
+      );
+      if (accLegacy.isNotEmpty) {
+        keysOwnedByOthers.add(accLegacy);
+      }
+    }
+
+    // 2. Dò tìm dữ liệu sẵn có trên đĩa theo các khóa ứng viên của chính tài khoản này
+    final candidates = <String>[
+      if (canonicalEmail.isNotEmpty) StorageService.sanitizeEmailWithDomain(canonicalEmail),
+      if (canonicalEmail.isNotEmpty) StorageService.sanitizeUserKey(canonicalEmail),
+      StorageService.sanitizeUserKey(cleanTyped),
+      if (cleanUsername.isNotEmpty) StorageService.sanitizeUserKey(cleanUsername),
+      if (cleanUid.isNotEmpty) 'uid_$cleanUid',
+    ].where((k) => k.isNotEmpty).toSet().toList();
+
+    for (final cand in candidates) {
+      if (!keysOwnedByOthers.contains(cand) && DatabaseService.hasUserDataOnDisk(cand)) {
+        return cand;
+      }
+    }
+
+    // 3. Tài khoản mới hoàn toàn: dùng khóa chuẩn nhưng tự tách tên miền/uid nếu bị trùng tài khoản khác
+    final primaryBase = canonicalEmail.isNotEmpty
+        ? StorageService.sanitizeUserKey(canonicalEmail)
+        : StorageService.sanitizeUserKey(cleanTyped.isNotEmpty ? cleanTyped : cleanUsername);
+
+    if (primaryBase.isNotEmpty && !keysOwnedByOthers.contains(primaryBase)) {
+      return primaryBase;
+    }
+
+    if (canonicalEmail.isNotEmpty) {
+      final withDomain = StorageService.sanitizeEmailWithDomain(canonicalEmail);
+      if (withDomain.isNotEmpty && !keysOwnedByOthers.contains(withDomain)) {
+        return withDomain;
+      }
+    }
+
+    if (cleanUid.isNotEmpty) {
+      return primaryBase.isNotEmpty ? '${primaryBase}_u$cleanUid' : 'uid_$cleanUid';
+    }
+    return primaryBase.isNotEmpty ? primaryBase : 'user_${DateTime.now().millisecondsSinceEpoch}';
   }
 
   Future<void> checkAuthStatus() async {
@@ -160,7 +262,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await refreshAccountsList();
+      await refreshAccountsList(notify: false);
       final loggedIn = await _storage.isLoggedIn();
       if (loggedIn) {
         _isAuthenticated = true;
@@ -168,9 +270,10 @@ class AuthProvider extends ChangeNotifier {
         _userName = await _storage.getUserName();
         _avatar = await _storage.getUserAvatar();
         _authToken = await _storage.getAuthToken();
+        _userGroups = [];
 
-        // Tự động khôi phục avatar từ JWT token nếu storage lưu trước đó chưa có avatar
-        if ((_avatar == null || _avatar!.isEmpty) && _authToken != null && _authToken!.contains('.')) {
+        // Luôn khôi phục groups (và avatar nếu thiếu) từ JWT token, kể cả khi đã có avatar
+        if (_authToken != null && _authToken!.contains('.')) {
           try {
             final parts = _authToken!.split('.');
             if (parts.length >= 2) {
@@ -181,7 +284,7 @@ class AuthProvider extends ChangeNotifier {
               final decodedJson = jsonDecode(utf8.decode(base64Url.decode(payloadStr)));
               if (decodedJson is Map && decodedJson['user'] != null) {
                 final userObj = decodedJson['user'];
-                if (userObj['avatar'] != null) {
+                if ((_avatar == null || _avatar!.isEmpty) && userObj['avatar'] != null) {
                   final tokenAvatar = userObj['avatar'].toString();
                   if (tokenAvatar.isNotEmpty && tokenAvatar != 'null') {
                     _avatar = tokenAvatar;
@@ -194,6 +297,17 @@ class AuthProvider extends ChangeNotifier {
               }
             }
           } catch (_) {}
+        }
+
+        // Dự phòng khôi phục groups từ MultiAccountService nếu JWT không có
+        if (_userGroups.isEmpty) {
+          final matchedAcc = await _multiAccount.findMatchingAccount(
+            email: _userEmail,
+            username: _userName,
+          );
+          if (matchedAcc != null && matchedAcc.groups.isNotEmpty) {
+            _userGroups = List<String>.from(matchedAcc.groups);
+          }
         }
 
         // Kiểm tra quyền nhóm của phiên lưu trữ
@@ -211,18 +325,33 @@ class AuthProvider extends ChangeNotifier {
           _userName = null;
           _authToken = null;
           _userGroups = [];
+          _activeUserKey = '';
+          await _db.closeForLogout();
+          await _localConfig.clearForLogout();
+          _persona.switchUser('');
           _errorMessage = 'Tài khoản chưa tham gia nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
         } else {
-          final userKey = await _storage.getUserKey();
+          final storedKey = await _storage.getStoredUserKey();
+          final userKey = (storedKey != null && storedKey.trim().isNotEmpty)
+              ? storedKey.trim()
+              : await _resolveCanonicalUserKey(
+                  username: _userName,
+                  respEmail: _userEmail,
+                  typedInput: _userEmail ?? _userName ?? '',
+                );
+          await _storage.setUserKey(userKey);
           await _db.switchUser(userKey);
           await _localConfig.switchUser(userKey);
           _persona.switchUser(userKey);
+          _activeUserKey = userKey;
         }
       } else {
         _isAuthenticated = false;
+        _activeUserKey = '';
       }
     } catch (_) {
       _isAuthenticated = false;
+      _activeUserKey = '';
     } finally {
       _isCheckingAuth = false;
       notifyListeners();
@@ -270,10 +399,26 @@ class AuthProvider extends ChangeNotifier {
           avatarUrl = pic.startsWith('http') ? pic : 'https://type.vn$pic';
         }
 
+        final respUid = resp['uid']?.toString() ?? '';
+        final respUsername = resp['username']?.toString() ?? cleanEmail.split('@').first;
+        final respEmail = resp['email']?.toString().trim() ?? '';
+        final existingAcc = await _multiAccount.findMatchingAccount(
+          uid: respUid,
+          email: respEmail.isNotEmpty ? respEmail : cleanEmail,
+          username: respUsername,
+        );
+        final effectiveEmail = respEmail.isNotEmpty
+            ? respEmail
+            : (cleanEmail.contains('@')
+                ? cleanEmail
+                : ((existingAcc?.email != null && existingAcc!.email!.contains('@'))
+                    ? existingAcc.email!
+                    : cleanEmail));
+
         final user = <String, dynamic>{
-          'id': resp['uid']?.toString() ?? '',
-          'name': resp['username']?.toString() ?? cleanEmail.split('@').first,
-          'email': cleanEmail,
+          'id': respUid,
+          'name': respUsername,
+          'email': effectiveEmail,
           'server': server,
           'postcount': resp['postcount'],
           'reputation': resp['reputation'],
@@ -337,12 +482,27 @@ class AuthProvider extends ChangeNotifier {
           return false;
         }
 
+        // Xác định khóa lưu trữ ổn định duy nhất theo tài khoản (không bị đổi khi đăng nhập bằng username vs email)
+        final userKey = await _resolveCanonicalUserKey(
+          uid: respUid,
+          username: respUsername,
+          respEmail: effectiveEmail,
+          typedInput: cleanEmail,
+        );
+
         // Tạo JWT Token theo chuẩn AuthUtils._generateJWTToken
         final jwtToken = CryptoHelper.generateJWTToken(user);
 
-        // Lưu vào MultiAccountService (tương thích MultiAccountService trong ai.type)
-        await _multiAccount.saveAccount(cleanEmail, {'user': user, 'profile': user});
+        // Lưu vào MultiAccountService (gộp theo uid/email, lưu kèm userKey ổn định)
+        final accountIdToSave = effectiveEmail.isNotEmpty ? effectiveEmail : cleanEmail;
+        await _multiAccount.saveAccount(
+          accountIdToSave,
+          {'user': user, 'profile': user},
+          uid: respUid,
+          userKey: userKey,
+        );
 
+        await _storage.clearActiveServerId();
         if (rememberMe) {
           await _storage.setRememberMe(true);
           await _storage.setAuthToken(jwtToken);
@@ -351,26 +511,27 @@ class AuthProvider extends ChangeNotifier {
           await _storage.setAuthToken(jwtToken);
         }
 
-        await _storage.setUserEmail(cleanEmail);
-        await _storage.setUserName(user['name']?.toString() ?? cleanEmail);
+        await _storage.setUserEmail(effectiveEmail);
+        await _storage.setUserName(respUsername);
         await _storage.setUserAvatar(avatarUrl);
+        await _storage.setUserKey(userKey);
         await _storage.setLoggedIn(true);
 
-        _authToken = jwtToken;
-        _userEmail = cleanEmail;
-        _userName = user['name']?.toString();
-        _avatar = avatarUrl;
-        _userGroups = (user['groups'] as List?)?.map((e) => e.toString()).toList() ?? [];
-        _isAuthenticated = true;
-        _errorMessage = null;
-        _isLoading = false;
-
-        final userKey = StorageService.sanitizeUserKey(cleanEmail);
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
         _persona.switchUser(userKey);
 
-        await refreshAccountsList();
+        _authToken = jwtToken;
+        _userEmail = effectiveEmail;
+        _userName = respUsername;
+        _avatar = avatarUrl;
+        _userGroups = (user['groups'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _activeUserKey = userKey;
+        _isAuthenticated = true;
+        _errorMessage = null;
+        _isLoading = false;
+
+        await refreshAccountsList(notify: false);
         notifyListeners();
         return true;
       } else {
@@ -418,24 +579,37 @@ class AuthProvider extends ChangeNotifier {
           return false;
         }
 
-        _userEmail = email;
-        _userName = name;
-        _avatar = avatar;
-        _userGroups = groups;
-        _isAuthenticated = true;
-        _errorMessage = null;
+        final uid = profile['id']?.toString() ?? accountData['uid']?.toString() ?? '';
+        final storedKey = accountData['userKey']?.toString() ?? profile['userKey']?.toString();
+        final userKey = (storedKey != null && storedKey.trim().isNotEmpty)
+            ? storedKey.trim()
+            : await _resolveCanonicalUserKey(
+                uid: uid,
+                username: name,
+                respEmail: email,
+                typedInput: accountId,
+              );
 
+        await _storage.clearActiveServerId();
         await _storage.setUserEmail(email);
         await _storage.setUserName(name);
         await _storage.setUserAvatar(avatar);
+        await _storage.setUserKey(userKey);
         await _storage.setLoggedIn(true);
 
-        final userKey = StorageService.sanitizeUserKey(email);
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
         _persona.switchUser(userKey);
 
-        await refreshAccountsList();
+        _userEmail = email;
+        _userName = name;
+        _avatar = avatar;
+        _userGroups = groups;
+        _activeUserKey = userKey;
+        _isAuthenticated = true;
+        _errorMessage = null;
+
+        await refreshAccountsList(notify: false);
         _isLoading = false;
         notifyListeners();
         return true;
@@ -448,19 +622,23 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> loginStandaloneMode() async {
-    _isAuthenticated = true;
-    _userEmail = 'local.admin@type.vn';
-    _userName = 'Local Administrator';
-    _authToken = 'native_local_token';
-    _userGroups = ['administrators'];
+    const email = 'local.admin@type.vn';
+    final userKey = StorageService.sanitizeUserKey(email);
+    await _storage.clearActiveServerId();
     await _storage.setLoggedIn(true);
-    await _storage.setUserEmail(_userEmail!);
-    await _storage.setUserName(_userName!);
-    await _storage.setAuthToken(_authToken!);
-    final userKey = StorageService.sanitizeUserKey(_userEmail);
+    await _storage.setUserEmail(email);
+    await _storage.setUserName('Local Administrator');
+    await _storage.setAuthToken('native_local_token');
+    await _storage.setUserKey(userKey);
     await _db.switchUser(userKey);
     await _localConfig.switchUser(userKey);
     _persona.switchUser(userKey);
+    _isAuthenticated = true;
+    _userEmail = email;
+    _userName = 'Local Administrator';
+    _authToken = 'native_local_token';
+    _userGroups = ['administrators'];
+    _activeUserKey = userKey;
     _errorMessage = null;
     notifyListeners();
   }
@@ -472,11 +650,13 @@ class AuthProvider extends ChangeNotifier {
     _userEmail = null;
     _userName = null;
     _avatar = null;
+    _userGroups = [];
+    _activeUserKey = '';
     _errorMessage = null;
-    await _db.switchUser('');
-    await _localConfig.switchUser('');
+    await _db.closeForLogout();
+    await _localConfig.clearForLogout();
     _persona.switchUser('');
-    await refreshAccountsList();
+    await refreshAccountsList(notify: false);
     notifyListeners();
   }
 

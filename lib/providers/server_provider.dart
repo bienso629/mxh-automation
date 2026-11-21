@@ -81,9 +81,27 @@ class ServerProvider extends ChangeNotifier {
   String? get error => _error;
 
   ServerProvider() {
-    loadServers();
-    loadGlobalConfig();
+    _initIfLoggedIn();
     fetchMitomModels();
+  }
+
+  Future<void> _initIfLoggedIn() async {
+    try {
+      if (await _storage.isLoggedIn()) {
+        await loadServers();
+        await loadGlobalConfig();
+      }
+    } catch (_) {}
+  }
+
+  void resetForUserSwitch() {
+    _servers = [];
+    _selectedServer = null;
+    _serverIpsMap.clear();
+    _loadingIpsServerIds.clear();
+    _error = null;
+    _isLoading = false;
+    notifyListeners();
   }
 
   Future<void> fetchMitomModels({bool forceRefresh = false}) async {
@@ -162,7 +180,7 @@ class ServerProvider extends ChangeNotifier {
       }
       await loadGlobalConfig();
       try {
-        await _persona.loadSavedPersonas();
+        await _persona.loadSavedPersonas(forceReload: true);
       } catch (_) {}
       // Asynchronously fetch pointing IPs for all servers
       _fetchServerIpsForAll();

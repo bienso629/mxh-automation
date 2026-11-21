@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/services/database_service.dart';
 import '../core/services/persona_service.dart';
 import '../core/services/socks5_proxy_service.dart';
+import '../core/services/storage_service.dart';
 import '../models/persona_profile_model.dart';
 import '../models/schedule_task_model.dart';
 import '../models/server_model.dart';
@@ -26,8 +27,22 @@ class ScheduleProvider extends ChangeNotifier {
   String get filterStatus => _filterStatus;
 
   ScheduleProvider() {
-    loadTasks();
+    _initIfLoggedIn();
     _startBackgroundTicker();
+  }
+
+  Future<void> _initIfLoggedIn() async {
+    try {
+      if (await StorageService().isLoggedIn()) {
+        await loadTasks();
+      }
+    } catch (_) {}
+  }
+
+  void resetForUserSwitch() {
+    _tasks = [];
+    _isLoading = false;
+    notifyListeners();
   }
 
   @override
@@ -257,6 +272,7 @@ class ScheduleProvider extends ChangeNotifier {
 
   /// Kiểm tra các tác vụ đã đến thời hạn (due) để thực thi
   Future<void> checkAndRunDueTasks() async {
+    if (!await StorageService().isLoggedIn()) return;
     final now = DateTime.now();
     final dueTasks = _tasks.where((t) {
       return t.status == 'pending' && t.scheduledTime.isBefore(now);

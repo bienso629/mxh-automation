@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/services/api_service.dart';
+import '../core/services/storage_service.dart';
 import '../models/attachment_item.dart';
 import '../models/chat_message.dart';
 import '../models/chat_session.dart';
@@ -40,7 +41,30 @@ class ChatProvider extends ChangeNotifier {
   ];
 
   ChatProvider() {
-    initChat();
+    _initIfLoggedIn();
+  }
+
+  Future<void> _initIfLoggedIn() async {
+    try {
+      if (await StorageService().isLoggedIn()) {
+        await initChat();
+      }
+    } catch (_) {}
+  }
+
+  void resetForUserSwitch() {
+    _streamSub?.cancel();
+    _streamSub = null;
+    _sessions = [];
+    _currentSession = null;
+    _messages = [];
+    _isLoading = false;
+    _isLoadingMore = false;
+    _hasMoreMessages = false;
+    _oldestMessageId = 0;
+    _isGenerating = false;
+    _currentStatus = '';
+    notifyListeners();
   }
 
   Future<void> initChat() async {

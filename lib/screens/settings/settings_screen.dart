@@ -10,6 +10,7 @@ import '../../core/services/native_ssh_service.dart';
 import '../../core/services/persona_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
 import '../../core/services/windows_hypervisor_service.dart';
+import '../../core/services/windows_ldplayer_bridge_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_toast.dart';
 import '../../core/widgets/model_picker_dialog.dart';
@@ -47,12 +48,189 @@ class _SettingsScreenState extends State<SettingsScreen> {
   HypervisorState _hypervisorState = HypervisorState.unknown;
   bool _isTogglingHypervisor = false;
 
+  // Tích hợp LDPlayer VT-x & ADB tự động (chỉ Windows)
+  final WindowsLdPlayerBridgeService _ldBridge = WindowsLdPlayerBridgeService();
+  LdPlayerBridgeStatus? _ldBridgeStatus;
+  bool _isCheckingLdBridge = false;
+  bool _isActivatingLdPlayer = false;
+
   @override
   void initState() {
     super.initState();
     _loadGlobalConfig();
     _scanCliAgents();
     _refreshHypervisorState();
+    _refreshLdPlayerBridgeStatus();
+  }
+
+  Future<void> _refreshLdPlayerBridgeStatus({bool forceRefresh = false}) async {
+    if (!_ldBridge.isSupported) return;
+    if (mounted) {
+      setState(() => _isCheckingLdBridge = true);
+    }
+    try {
+      final status = await _ldBridge.getIntegrationStatus(forceRefresh: forceRefresh);
+      if (mounted) {
+        setState(() {
+          _ldBridgeStatus = status;
+          _isCheckingLdBridge = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isCheckingLdBridge = false);
+      }
+    }
+  }
+
+  Future<void> _activateLdPlayerIntegration() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Kích hoạt LDPlayer (VT-x & ADB)'),
+        content: const Text(
+          'Windows sẽ hỏi quyền Administrator để tự động:\n'
+          '1. Dừng Android Studio Emulator / AEHD đang xung đột ảo hóa.\n'
+          '2. Bật driver VT-x của LDPlayer (Ld9BoxSup / SUPInstall).\n'
+          '3. Tự nhận diện đường dẫn cài đặt LDPlayer & ADB trên máy này, mở giả lập và kết nối ADB.\n\n'
+          'Bạn có muốn thực hiện ngay không?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Kích hoạt')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isActivatingLdPlayer = true);
+    AppToast.info(context, 'Đang bật driver VT-x LDPlayer và kết nối ADB...');
+    try {
+      final result = await _ldBridge.activateLdPlayerIntegration(launchDefaultVm: true);
+      await Socks5ProxyService().refreshRuntimeStates();
+      await _refreshLdPlayerBridgeStatus(forceRefresh: true);
+      if (!mounted) return;
+      if (result.success) {
+        AppToast.success(context, result.message);
+      } else if (result.uacCancelled) {
+        AppToast.warning(context, result.message);
+      } else {
+        AppToast.error(context, result.message);
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.error(context, 'Lỗi kích hoạt LDPlayer: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isActivatingLdPlayer = false);
+      }
+    }
+  }
+
+  Widget _buildLdPlayerIntegrationCard() {
+    final st = _ldBridgeStatus;
+    final installed = st?.isInstalled ?? false;
+    final driverRunning = st?.isDriverRunning ?? false;
+    final connectedCount = st?.connectedAdbSerials.length ?? 0;
+    final isReady = installed && (driverRunning || connectedCount > 0);
+
+    String subtitle;
+    if (_isCheckingLdBridge && st == null) {
+      subtitle = 'Đang tự động quét đường dẫn LDPlayer, driver VT-x và ADB trên máy...';
+    } else if (!installed) {
+      subtitle = 'Chưa tìm thấy LDPlayer trên máy (hỗ trợ tự dò Registry & mọi ổ đĩa C..Z).';
+    } else {
+      final dirStr = st!.installDir ?? '';
+      final drvStr = driverRunning
+          ? 'Driver ${st.driverServiceName ?? "Ld9BoxSup"}: Đang chạy'
+          : (st.isAehdRunning
+              ? 'AEHD đang chiếm VT-x (cần chuyển sang LDPlayer)'
+              : 'Driver VT-x chưa bật');
+      final adbStr = connectedCount > 0
+          ? 'ADB: $connectedCount thiết bị online'
+          : 'ADB: chưa kết nối';
+      subtitle = '$drvStr | $adbStr${dirStr.isNotEmpty ? '\nThư mục: $dirStr' : ''}';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.inputBg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: isReady ? AppColors.accentCyan.withValues(alpha: 0.45) : AppColors.borderDark,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.phonelink_setup_rounded,
+            size: 18,
+            color: isReady ? AppColors.accentCyan : AppColors.warning,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Tích hợp LDPlayer (Driver VT-x & ADB)',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(fontSize: 10, color: AppColors.textMuted, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Quét lại LDPlayer & kết nối nhanh ADB',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            onPressed: (_isCheckingLdBridge || _isActivatingLdPlayer)
+                ? null
+                : () async {
+                    await _ldBridge.quickReconnectAdbOnly();
+                    await Socks5ProxyService().refreshRuntimeStates();
+                    await _refreshLdPlayerBridgeStatus(forceRefresh: true);
+                  },
+            icon: _isCheckingLdBridge
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 1.8, color: AppColors.accentCyan),
+                  )
+                : const Icon(Icons.refresh_rounded, size: 16, color: AppColors.accentCyan),
+          ),
+          const SizedBox(width: 6),
+          ElevatedButton(
+            onPressed: _isActivatingLdPlayer ? null : _activateLdPlayerIntegration,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: const Color(0xFF070B14),
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: const Size(0, 30),
+            ),
+            child: _isActivatingLdPlayer
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF070B14)),
+                  )
+                : const Text(
+                    'Kích hoạt',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _refreshHypervisorState() async {
@@ -1547,6 +1725,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             const SizedBox(height: 16),
                             if (Platform.isWindows) ...[
                               _buildHypervisorToggle(),
+                              const SizedBox(height: 10),
+                              _buildLdPlayerIntegrationCard(),
                               const SizedBox(height: 16),
                             ],
                             const Text('Số Thiết Bị Tối Đa Được Mở Đồng Thời', style: TextStyle(fontSize: 11, color: AppColors.textDim)),

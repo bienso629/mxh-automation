@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -21,30 +22,109 @@ class DatabaseService {
   final EncryptionService _enc = EncryptionService();
   String? _resolvedPath;
   String? _currentUserKey;
+  Future<void> _opChain = Future.value();
 
   String? get resolvedPath => _resolvedPath;
   String? get currentUserKey => _currentUserKey;
 
-  Future<void> switchUser(String userKey) async {
-    final sanitized = StorageService.sanitizeUserKey(userKey);
-    if (_currentUserKey == sanitized && _db != null && _db!.isOpen) return;
-    _currentUserKey = sanitized;
-    if (_db != null && _db!.isOpen) {
-      await _db!.close();
-      _db = null;
-    }
-    _resolvedPath = null;
-    await init(userKey: _currentUserKey);
+  Future<T> _synchronized<T>(Future<T> Function() action) {
+    final prev = _opChain;
+    final completer = Completer<void>();
+    _opChain = completer.future;
+    return prev.then((_) => action()).whenComplete(() {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    });
   }
 
-  Future<void> init({String? userKey}) async {
-    if (userKey != null && userKey.isNotEmpty) {
-      final sanitized = StorageService.sanitizeUserKey(userKey);
+  static String resolveDefaultDataDir() {
+    final userProfile = Platform.environment['USERPROFILE']?.trim();
+    final homeEnv = Platform.environment['HOME']?.trim();
+    final appDataEnv = Platform.environment['APPDATA']?.trim();
+    final homeDir = (userProfile != null && userProfile.isNotEmpty)
+        ? userProfile
+        : ((homeEnv != null && homeEnv.isNotEmpty)
+            ? homeEnv
+            : ((appDataEnv != null && appDataEnv.isNotEmpty) ? appDataEnv : Directory.systemTemp.path));
+    return p.join(homeDir, '.agent_mxh_auto');
+  }
+
+  /// Kiểm tra xem một userKey có sẵn dữ liệu (DB / personas JSON / config JSON) trên đĩa hay không
+  static bool hasUserDataOnDisk(String userKey) {
+    final k = userKey.trim();
+    if (k.isEmpty) return false;
+    final dataDir = resolveDefaultDataDir();
+    final dbFile = File(p.join(dataDir, 'chat_history_$k.db'));
+    final personasFile = File(p.join(dataDir, 'personas_$k.json'));
+    final cfgFile = File(p.join(dataDir, 'config_$k.json'));
+    return dbFile.existsSync() || personasFile.existsSync() || cfgFile.existsSync();
+  }
+
+  /// Đóng kết nối DB hiện tại khi đăng xuất mà không mở/tạo file DB dùng chung toàn cục
+  Future<void> closeForLogout() {
+    return _synchronized(() async {
+      _currentUserKey = '';
+      if (_db != null && _db!.isOpen) {
+        try {
+          await _db!.close();
+        } catch (_) {}
+      }
+      _db = null;
+      _resolvedPath = null;
+    });
+  }
+
+  Future<void> switchUser(String userKey) {
+    return _synchronized(() async {
+      final sanitized = userKey.trim().isEmpty
+          ? ''
+          : (userKey.contains('@') ? StorageService.sanitizeUserKey(userKey) : userKey.trim().toLowerCase());
+      if (sanitized.isEmpty) {
+        _currentUserKey = '';
+        if (_db != null && _db!.isOpen) {
+          try {
+            await _db!.close();
+          } catch (_) {}
+        }
+        _db = null;
+        _resolvedPath = null;
+        return;
+      }
+      if (_currentUserKey == sanitized && _db != null && _db!.isOpen) return;
+      _currentUserKey = sanitized;
+      if (_db != null && _db!.isOpen) {
+        try {
+          await _db!.close();
+        } catch (_) {}
+        _db = null;
+      }
+      _resolvedPath = null;
+      await _initLocked(userKey: _currentUserKey);
+    });
+  }
+
+  Future<void> init({String? userKey}) {
+    return _synchronized(() => _initLocked(userKey: userKey));
+  }
+
+  Future<void> _initLocked({String? userKey}) async {
+    if (userKey != null && userKey.trim().isNotEmpty) {
+      final sanitized = userKey.contains('@')
+          ? StorageService.sanitizeUserKey(userKey)
+          : userKey.trim().toLowerCase();
       if (_currentUserKey != sanitized && _db != null && _db!.isOpen) {
-        await _db!.close();
+        try {
+          await _db!.close();
+        } catch (_) {}
         _db = null;
       }
       _currentUserKey = sanitized;
+    } else if (_currentUserKey == null || _currentUserKey!.isEmpty) {
+      final storedKey = await StorageService().getUserKey();
+      if (storedKey.isNotEmpty) {
+        _currentUserKey = storedKey;
+      }
     }
 
     if (_db != null && _db!.isOpen) return;

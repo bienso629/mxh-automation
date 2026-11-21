@@ -3,6 +3,8 @@ import 'crypto_helper.dart';
 
 class AccountProfile {
   final String id;
+  final String? uid;
+  final String? userKey;
   final String? name;
   final String? email;
   final String? server;
@@ -14,6 +16,8 @@ class AccountProfile {
 
   AccountProfile({
     required this.id,
+    this.uid,
+    this.userKey,
     this.name,
     this.email,
     this.server,
@@ -33,8 +37,12 @@ class AccountProfile {
         avatar = 'https://type.vn$avatar';
       }
     }
+    final rawUid = profile['id']?.toString() ?? map['uid']?.toString();
+    final rawUserKey = map['userKey']?.toString() ?? profile['userKey']?.toString();
     return AccountProfile(
       id: map['id']?.toString() ?? profile['id']?.toString() ?? profile['email']?.toString() ?? '',
+      uid: (rawUid != null && rawUid.trim().isNotEmpty) ? rawUid.trim() : null,
+      userKey: (rawUserKey != null && rawUserKey.trim().isNotEmpty) ? rawUserKey.trim() : null,
       name: profile['name']?.toString() ?? profile['username']?.toString() ?? '',
       email: profile['email']?.toString() ?? '',
       server: profile['server']?.toString() ?? 'vn.s3',
@@ -49,6 +57,8 @@ class AccountProfile {
   Map<String, dynamic> toMap() {
     return {
       'id': id,
+      if (uid != null) 'uid': uid,
+      if (userKey != null) 'userKey': userKey,
       'name': name,
       'email': email,
       'server': server,
@@ -116,12 +126,75 @@ class MultiAccountService {
     return _prefs!.getString(_keyActiveAccountId);
   }
 
-  Future<void> saveAccount(String accountId, Map<String, dynamic> rawData) async {
+  Future<AccountProfile?> findMatchingAccount({
+    String? uid,
+    String? email,
+    String? username,
+  }) async {
+    final accounts = await getAllAccounts();
+    final cleanUid = uid?.trim() ?? '';
+    final cleanEmail = email?.trim().toLowerCase() ?? '';
+    final cleanUsername = username?.trim().toLowerCase() ?? '';
+
+    if (cleanUid.isNotEmpty) {
+      for (final acc in accounts) {
+        if (acc.uid != null && acc.uid!.trim() == cleanUid) {
+          return acc;
+        }
+      }
+    }
+    if (cleanEmail.isNotEmpty) {
+      for (final acc in accounts) {
+        if ((acc.email?.trim().toLowerCase() == cleanEmail) ||
+            (acc.id.trim().toLowerCase() == cleanEmail)) {
+          return acc;
+        }
+      }
+    }
+    if (cleanUsername.isNotEmpty) {
+      for (final acc in accounts) {
+        if ((acc.name?.trim().toLowerCase() == cleanUsername) ||
+            (acc.id.trim().toLowerCase() == cleanUsername)) {
+          return acc;
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> saveAccount(
+    String accountId,
+    Map<String, dynamic> rawData, {
+    String? uid,
+    String? userKey,
+  }) async {
     final list = await _loadAllRawAccounts();
-    final index = list.indexWhere((e) => e['id']?.toString() == accountId);
-    
+    final cleanUid = uid?.trim() ?? '';
+    final cleanAccountId = accountId.trim().toLowerCase();
+
+    int index = list.indexWhere((e) {
+      final existingId = e['id']?.toString().trim().toLowerCase() ?? '';
+      if (existingId == cleanAccountId) return true;
+      if (cleanUid.isNotEmpty) {
+        final profile = e['profile'] ?? e['user'];
+        final existingUid = (profile is Map ? profile['id']?.toString() : null)?.trim() ??
+            e['uid']?.toString().trim() ??
+            '';
+        if (existingUid.isNotEmpty && existingUid == cleanUid) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    final preservedUserKey = (userKey != null && userKey.trim().isNotEmpty)
+        ? userKey.trim()
+        : (index >= 0 ? list[index]['userKey']?.toString() : null);
+
     final payload = {
       'id': accountId,
+      if (cleanUid.isNotEmpty) 'uid': cleanUid,
+      if (preservedUserKey != null && preservedUserKey.isNotEmpty) 'userKey': preservedUserKey,
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
       ...rawData,
     };

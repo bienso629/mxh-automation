@@ -17,6 +17,7 @@ class StorageService {
   static const String _keyUserEmail = 'user_email';
   static const String _keyUserName = 'user_name';
   static const String _keyUserAvatar = 'user_avatar';
+  static const String _keyUserKey = 'user_key';
   static const String _keyIsLoggedIn = 'is_logged_in';
   static const String _keyRememberMe = 'remember_me';
 
@@ -61,6 +62,11 @@ class StorageService {
   Future<void> setActiveServerId(String id) async {
     await init();
     await _prefs.setString(_keyActiveServerId, id);
+  }
+
+  Future<void> clearActiveServerId() async {
+    await init();
+    await _prefs.remove(_keyActiveServerId);
   }
 
   // Default AI Model
@@ -162,12 +168,29 @@ class StorageService {
     await _prefs.setBool(_keyRememberMe, value);
   }
 
+  Future<String?> getStoredUserKey() async {
+    await init();
+    return _prefs.getString(_keyUserKey);
+  }
+
+  Future<void> setUserKey(String? key) async {
+    await init();
+    final cleaned = key?.trim() ?? '';
+    if (cleaned.isEmpty) {
+      await _prefs.remove(_keyUserKey);
+    } else {
+      await _prefs.setString(_keyUserKey, cleaned);
+    }
+  }
+
   Future<void> clearAuth() async {
     await init();
     await _prefs.remove(_keyAuthToken);
     await _prefs.remove(_keyUserEmail);
     await _prefs.remove(_keyUserName);
     await _prefs.remove(_keyUserAvatar);
+    await _prefs.remove(_keyUserKey);
+    await _prefs.remove(_keyActiveServerId);
     await _prefs.setBool(_keyIsLoggedIn, false);
   }
 
@@ -183,8 +206,22 @@ class StorageService {
     return cleaned.replaceAll(RegExp(r'^_+|_+$'), '');
   }
 
+  /// Tạo khóa tài khoản bao gồm cả domain email (tránh trùng lặp giữa hai email khác domain cùng tiền tố)
+  static String sanitizeEmailWithDomain(String? user) {
+    if (user == null || user.trim().isEmpty) {
+      return '';
+    }
+    final u = user.trim().toLowerCase();
+    final cleaned = u.replaceAll('@', '__').replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    return cleaned.replaceAll(RegExp(r'^_+|_+$'), '');
+  }
+
   Future<String> getUserKey() async {
     await init();
+    final stored = _prefs.getString(_keyUserKey);
+    if (stored != null && stored.trim().isNotEmpty) {
+      return stored.trim();
+    }
     final email = await getUserEmail();
     if (email != null && email.isNotEmpty) {
       final key = sanitizeUserKey(email);

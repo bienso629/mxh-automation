@@ -8,6 +8,7 @@ import '../../core/services/persona_service.dart';
 import '../../core/services/browser_profile_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
 import '../../core/services/smspool_service.dart';
+import '../../core/services/windows_ldplayer_bridge_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_toast.dart';
 import '../../core/widgets/tadu_dialog.dart';
@@ -45,7 +46,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     super.initState();
     _socks5Service.addListener(_onSocks5StateChanged);
     HardwareKeyboard.instance.addHandler(_handleHardwareKey);
-    _loadPersonas();
+    _loadPersonas(forceReload: true);
   }
 
   @override
@@ -545,6 +546,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     bool isBackingUpPersonaAvd = false;
     bool isRestoringPersonaAvd = false;
     bool isDeletingPersonaAvd = false;
+    bool isActivatingLdPlayer = false;
     bool isSaving = false;
 
     void startOtpPolling(String orderId, StateSetter setDialogState, BuildContext dialogCtx) {
@@ -1392,6 +1394,79 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                                     ),
                                                   ),
                                                 ),
+                                                if (Platform.isWindows) ...[
+                                                  const SizedBox(width: 6),
+                                                  InkWell(
+                                                    onTap: (isActivatingLdPlayer || isLoadingAvds)
+                                                        ? null
+                                                        : () async {
+                                                            setDialogState(() => isActivatingLdPlayer = true);
+                                                            AppToast.info(
+                                                              dialogCtx,
+                                                              'Đang bật driver VT-x LDPlayer và kết nối ADB...',
+                                                            );
+                                                            try {
+                                                              final res = await WindowsLdPlayerBridgeService()
+                                                                  .activateLdPlayerIntegration(launchDefaultVm: true);
+                                                              await _socks5Service.refreshRuntimeStates();
+                                                              if (dialogCtx.mounted) {
+                                                                if (res.success) {
+                                                                  AppToast.success(dialogCtx, res.message);
+                                                                } else if (res.uacCancelled) {
+                                                                  AppToast.warning(dialogCtx, res.message);
+                                                                } else {
+                                                                  AppToast.error(dialogCtx, res.message);
+                                                                }
+                                                                await refreshModalDevices(
+                                                                  forceRefresh: true,
+                                                                  showToast: false,
+                                                                );
+                                                              }
+                                                            } catch (e) {
+                                                              if (dialogCtx.mounted) {
+                                                                AppToast.error(dialogCtx, 'Lỗi kích hoạt LDPlayer: $e');
+                                                              }
+                                                            } finally {
+                                                              if (dialogCtx.mounted) {
+                                                                setDialogState(() => isActivatingLdPlayer = false);
+                                                              }
+                                                            }
+                                                          },
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    child: Padding(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                                      child: Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: [
+                                                          if (isActivatingLdPlayer)
+                                                            const SizedBox(
+                                                              width: 10,
+                                                              height: 10,
+                                                              child: CircularProgressIndicator(
+                                                                strokeWidth: 1.2,
+                                                                color: AppColors.primaryLight,
+                                                              ),
+                                                            )
+                                                          else
+                                                            const Icon(
+                                                              Icons.bolt_rounded,
+                                                              size: 12,
+                                                              color: AppColors.primaryLight,
+                                                            ),
+                                                          const SizedBox(width: 3),
+                                                          Text(
+                                                            isActivatingLdPlayer ? 'Đang bật...' : 'Bật LDPlayer',
+                                                            style: const TextStyle(
+                                                              fontSize: 11,
+                                                              color: AppColors.primaryLight,
+                                                              fontWeight: FontWeight.bold,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
                                                 const SizedBox(width: 8),
                                                 if (Socks5ProxyService.isExternalEmulatorId(selectedAvd)) ...[
                                                   InkWell(
@@ -2858,10 +2933,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     ));
 
     for (final personaIp in _personas.keys) {
-      // Chi nhan cac IP that (bo qua khoa phu 'ip##n' - chung se lam card rieng ben duoi)
+      // Đảm bảo cả IP của nhân vật gốc lẫn nhân vật phụ ('ip##n') đều có IP gốc hiện diện để dựng card
       final ipRegex = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$');
       final ipOnly = personaIp.split('##').first;
-      if (!ipRegex.hasMatch(personaIp)) continue;
+      if (!ipRegex.hasMatch(ipOnly)) continue;
       if (existingIps.contains(ipOnly)) continue;
       // Tìm xem IP này có khớp với server nào không
       final matchedServer = servers.firstWhere(

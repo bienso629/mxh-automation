@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'core/services/database_service.dart';
 import 'core/services/local_config_service.dart';
+import 'core/services/persona_service.dart';
 import 'core/services/socks5_proxy_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/theme/app_theme.dart';
@@ -24,10 +25,17 @@ void main() async {
     await StorageService().init();
   } catch (_) {}
 
-  // Initialize Database and Local Config (Desktop & Mobile)
+  // Initialize Database and Local Config only for currently authenticated user
   try {
-    await DatabaseService().init();
-    await LocalConfigService().loadConfig();
+    final storage = StorageService();
+    if (await storage.isLoggedIn()) {
+      final userKey = await storage.getUserKey();
+      if (userKey.isNotEmpty) {
+        await DatabaseService().switchUser(userKey);
+        await LocalConfigService().switchUser(userKey);
+        PersonaService().switchUser(userKey);
+      }
+    }
   } catch (_) {}
 
   // Setup System UI Overlay styles
@@ -69,8 +77,15 @@ class TaduCloudAiAgentApp extends StatelessWidget {
   }
 }
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  String? _lastTrackedUserKey;
 
   @override
   Widget build(BuildContext context) {
@@ -85,8 +100,28 @@ class AuthGate extends StatelessWidget {
       );
     }
 
+    final currentKey = auth.isAuthenticated ? auth.activeUserKey : '';
+    if (_lastTrackedUserKey != null && _lastTrackedUserKey != currentKey) {
+      final serverProv = context.read<ServerProvider>();
+      final chatProv = context.read<ChatProvider>();
+      final schedProv = context.read<ScheduleProvider>();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        serverProv.resetForUserSwitch();
+        chatProv.resetForUserSwitch();
+        schedProv.resetForUserSwitch();
+        if (currentKey.isNotEmpty) {
+          serverProv.loadServers();
+          chatProv.initChat();
+          schedProv.loadTasks();
+        }
+      });
+    }
+    _lastTrackedUserKey = currentKey;
+
     if (auth.isAuthenticated) {
-      return const MainNavigationScreen();
+      return MainNavigationScreen(
+        key: ValueKey('nav_${auth.activeUserKey}'),
+      );
     }
 
     return const LoginScreen();

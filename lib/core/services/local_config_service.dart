@@ -54,13 +54,44 @@ class LocalConfigService {
     'removed_builtin_servers': [],
   };
 
+  /// Xóa bộ nhớ đệm cấu hình khi đăng xuất mà không mở hoặc ghi đè config.json toàn cục
+  Future<void> clearForLogout() async {
+    _currentUserKey = '';
+    _resolvedConfigPath = null;
+    _cachedConfig = {};
+  }
+
   Future<void> switchUser(String userKey) async {
-    final sanitized = StorageService.sanitizeUserKey(userKey);
+    final sanitized = userKey.trim().isEmpty
+        ? ''
+        : (userKey.contains('@') ? StorageService.sanitizeUserKey(userKey) : userKey.trim().toLowerCase());
+    if (sanitized.isEmpty) {
+      await clearForLogout();
+      return;
+    }
     if (_currentUserKey == sanitized && _cachedConfig.isNotEmpty) return;
     _currentUserKey = sanitized;
     _resolvedConfigPath = null;
     _cachedConfig = {};
     await loadConfig(userKey: _currentUserKey);
+  }
+
+  bool _hasExistingPerUserConfigs(String homeDir) {
+    try {
+      final dir = Directory(p.join(homeDir, '.agent_mxh_auto'));
+      if (!dir.existsSync()) return false;
+      for (final entity in dir.listSync()) {
+        if (entity is File) {
+          final name = p.basename(entity.path);
+          if (name.startsWith('config_') &&
+              name.endsWith('.json') &&
+              !name.contains('test')) {
+            return true;
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
   }
 
   String _getUserHomeDir() {
@@ -80,7 +111,14 @@ class LocalConfigService {
   }
 
   Future<String> _resolveConfigPath({String? userKey}) async {
-    final key = userKey ?? _currentUserKey ?? await StorageService().getUserKey();
+    final key = (userKey != null && userKey.trim().isNotEmpty)
+        ? userKey.trim()
+        : ((_currentUserKey != null && _currentUserKey!.isNotEmpty)
+            ? _currentUserKey!
+            : await StorageService().getUserKey());
+    if (key.isNotEmpty) {
+      _currentUserKey = key;
+    }
     final configFileName = key.isNotEmpty ? 'config_$key.json' : 'config.json';
 
     if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
@@ -113,8 +151,9 @@ class LocalConfigService {
         }
       }
 
-      // If user-specific config does not exist yet, search for base config.json and seed/copy it
-      if (key.isNotEmpty) {
+      // Chỉ migrate config.json cũ sang tài khoản ĐẦU TIÊN khi hệ thống chưa có bất kỳ config_<user>.json nào.
+      // Khi đăng nhập tài khoản mới thứ 2 trở đi, tuyệt đối không sao chép cấu hình/server của tài khoản cũ sang!
+      if (key.isNotEmpty && !_hasExistingPerUserConfigs(homeDir)) {
         final fallbackCandidates = [
           p.join(currentDir, 'config.json'),
           p.join(currentDir, '..', 'config.json'),
@@ -458,7 +497,30 @@ class LocalConfigService {
           (removedBuiltinsRoot.contains('srv_server_100') || removedBuiltinsRoot.contains('103.74.116.119')))) {
         final defaultS = ServerModel.fromJson(cfg, isCurrent: true);
         serversList.add(defaultS);
-        cfg['servers'] = [defaultS.toJson()];
+        // Tài khoản mới khởi tạo sạch: bổ sung Server 100 built-in lần đầu nếu chưa bị người dùng xóa
+        if (!serversList.any((s) => s.serverIp == '103.74.116.119') &&
+            !removedBuiltinsRoot.contains('srv_server_100') &&
+            !removedBuiltinsRoot.contains('103.74.116.119')) {
+          serversList.add(ServerModel(
+            id: 'srv_server_100',
+            name: 'Server 100',
+            serverIp: '103.74.116.119',
+            sshPort: 7878,
+            sshUser: 'root',
+            sshPass: 'Tadu#123!@#',
+            aiModel: 'glm-5.3',
+            remoteWorkDir: '/root',
+            apiPort: 8000,
+            isSelected: false,
+            status: 'online',
+          ));
+        }
+        cfg['servers'] = serversList.map((s) {
+          final m = s.toJson();
+          m['is_selected'] = s.isSelected;
+          m['set_active'] = s.isSelected;
+          return m;
+        }).toList();
         cfg['active_server_id'] = defaultS.id;
         await saveConfig(cfg, userKey: _currentUserKey);
       }

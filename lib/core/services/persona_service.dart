@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import '../../models/persona_profile_model.dart';
 import 'database_service.dart';
 import 'local_config_service.dart';
+import 'storage_service.dart';
 
 class PersonaService {
   static final PersonaService _instance = PersonaService._internal();
@@ -16,10 +17,19 @@ class PersonaService {
   final Map<String, PersonaProfile> _cachedPersonas = {};
   final Set<String> _activeScopeIps = {};
   String? _currentUserKey;
+  String _loadedUserKey = '';
+  int _userGeneration = 0;
   bool _isLoaded = false;
   Future<Map<String, PersonaProfile>>? _loadingFuture;
 
   Set<String> get activeScopeIps => Set.unmodifiable(_activeScopeIps);
+
+  String get _effectiveUserKey {
+    if (_currentUserKey != null && _currentUserKey!.isNotEmpty) {
+      return _currentUserKey!;
+    }
+    return _dbService.currentUserKey?.trim() ?? '';
+  }
 
   void setActiveScopeIps(Iterable<String> ips) {
     _activeScopeIps.clear();
@@ -31,8 +41,13 @@ class PersonaService {
   }
 
   void switchUser(String? userKey) {
-    if (_currentUserKey != userKey) {
-      _currentUserKey = userKey;
+    final normalized = (userKey == null || userKey.trim().isEmpty)
+        ? ''
+        : (userKey.contains('@') ? StorageService.sanitizeUserKey(userKey) : userKey.trim().toLowerCase());
+    if (_currentUserKey != normalized || normalized.isEmpty) {
+      _userGeneration++;
+      _currentUserKey = normalized;
+      _loadedUserKey = '';
       _cachedPersonas.clear();
       _activeScopeIps.clear();
       _isLoaded = false;
@@ -41,6 +56,8 @@ class PersonaService {
   }
 
   void clearCache() {
+    _userGeneration++;
+    _loadedUserKey = '';
     _cachedPersonas.clear();
     _activeScopeIps.clear();
     _isLoaded = false;
@@ -57,31 +74,35 @@ class PersonaService {
         Directory(primaryDir).createSync(recursive: true);
       } catch (_) {}
     }
-    final key = (_currentUserKey != null && _currentUserKey!.isNotEmpty)
-        ? _currentUserKey!
-        : (_dbService.currentUserKey ?? '');
-    final list = <String>[];
+    final key = _effectiveUserKey;
     if (key.isNotEmpty) {
-      list.add(p.join(primaryDir, 'personas_$key.json'));
+      // Cô lập tuyệt đối theo từng tài khoản: chỉ đọc/ghi file personas_<userKey>.json của chính tài khoản đó,
+      // tuyệt đối không trộn hay xóa nhầm file personas.json dùng chung giữa các tài khoản khác nhau.
+      return [p.join(primaryDir, 'personas_$key.json')];
     }
-    list.add(p.join(primaryDir, 'personas.json'));
-    list.add(p.join(home, '.tadu_ai_agent', 'personas.json'));
-    list.add(p.join(Directory.current.path, 'personas.json'));
-    return list;
+    return [
+      p.join(primaryDir, 'personas.json'),
+      p.join(home, '.tadu_ai_agent', 'personas.json'),
+      p.join(Directory.current.path, 'personas.json'),
+    ];
   }
 
   String get _storageFilePath => _candidateStoragePaths.first;
 
-  /// Nạp danh sách nhân vật từ database local của app (fallback json nếu chưa có trong DB)
+  /// Nạp danh sách nhân vật từ database local của app (fallback json riêng của user nếu chưa có trong DB)
   Future<Map<String, PersonaProfile>> loadSavedPersonas({bool forceReload = false}) async {
-    if (!forceReload && _isLoaded && _cachedPersonas.isNotEmpty) {
+    final activeKey = _effectiveUserKey;
+    final keyChanged = activeKey != _loadedUserKey;
+    final shouldForce = forceReload || keyChanged;
+
+    if (!shouldForce && _isLoaded) {
       return Map.unmodifiable(_cachedPersonas);
     }
-    if (!forceReload && _loadingFuture != null) {
+    if (!shouldForce && _loadingFuture != null) {
       return _loadingFuture!;
     }
 
-    final future = _doLoadSavedPersonas(forceReload: forceReload);
+    final future = _doLoadSavedPersonas(forceReload: shouldForce);
     _loadingFuture = future;
     try {
       return await future;
@@ -93,25 +114,38 @@ class PersonaService {
   }
 
   Future<Map<String, PersonaProfile>> _doLoadSavedPersonas({required bool forceReload}) async {
-    if (forceReload) {
-      _cachedPersonas.clear();
+    final startGen = _userGeneration;
+    final activeKey = _effectiveUserKey;
+    final loaded = <String, PersonaProfile>{};
+
+    if (!forceReload && _loadedUserKey == activeKey) {
+      loaded.addAll(_cachedPersonas);
     }
 
     try {
-      // 1. Thử tải từ database SQLite local
+      // 1. Tải từ database SQLite riêng của tài khoản đang đăng nhập
       final dbPersonas = await _dbService.getPersonaProfiles();
+      if (startGen != _userGeneration || activeKey != _effectiveUserKey) {
+        return Map.unmodifiable(_cachedPersonas);
+      }
       if (dbPersonas.isNotEmpty) {
-        _cachedPersonas.addAll(dbPersonas);
+        loaded.addAll(dbPersonas);
       }
     } catch (_) {}
 
-    // 2. Đồng bộ thêm từ các file JSON dự phòng nếu database còn thiếu profile nào
+    // 2. Đồng bộ thêm từ file JSON dự phòng của CHÍNH tài khoản này nếu DB còn thiếu bản ghi/trường mới
     final primaryPath = _storageFilePath;
     for (final path in _candidateStoragePaths) {
+      if (startGen != _userGeneration || activeKey != _effectiveUserKey) {
+        return Map.unmodifiable(_cachedPersonas);
+      }
       try {
         final file = File(path);
         if (await file.exists()) {
           final content = await file.readAsString();
+          if (startGen != _userGeneration || activeKey != _effectiveUserKey) {
+            return Map.unmodifiable(_cachedPersonas);
+          }
           if (content.trim().isNotEmpty) {
             final decoded = jsonDecode(content);
             if (decoded is Map<String, dynamic>) {
@@ -123,13 +157,13 @@ class PersonaService {
                   final p = hasExplicitEntryKey ? parsed : parsed.copyWith(entryKey: mapKey);
                   final storageKey = p.effectiveEntryKey;
 
-                  if (!_cachedPersonas.containsKey(storageKey)) {
-                    _cachedPersonas[storageKey] = p;
+                  if (!loaded.containsKey(storageKey)) {
+                    loaded[storageKey] = p;
                     toInsertToDb.add(p);
                   } else if (path == primaryPath) {
                     // Khôi phục browser_profile_id / browser_profile_name từ file JSON chính
                     // cho các bản ghi đã lưu trước khi SQLite bổ sung cột lưu trữ tương ứng
-                    final existing = _cachedPersonas[storageKey]!;
+                    final existing = loaded[storageKey]!;
                     final existingBrowserId = existing.browserProfileId?.trim() ?? '';
                     final jsonBrowserId = p.browserProfileId?.trim() ?? '';
                     if (existingBrowserId.isEmpty && jsonBrowserId.isNotEmpty) {
@@ -137,13 +171,13 @@ class PersonaService {
                         browserProfileId: p.browserProfileId,
                         browserProfileName: p.browserProfileName ?? p.browserProfileId,
                       );
-                      _cachedPersonas[storageKey] = merged;
+                      loaded[storageKey] = merged;
                       toInsertToDb.add(merged);
                     }
                   }
                 }
               });
-              if (toInsertToDb.isNotEmpty) {
+              if (toInsertToDb.isNotEmpty && startGen == _userGeneration && activeKey == _effectiveUserKey) {
                 await _dbService.batchUpsertPersonaProfiles(toInsertToDb);
               }
             }
@@ -152,7 +186,15 @@ class PersonaService {
       } catch (_) {}
     }
 
-    // 3. Nếu DB có profiles mà file JSON chính chưa có thì đồng bộ ngược lại JSON
+    if (startGen != _userGeneration || activeKey != _effectiveUserKey) {
+      return Map.unmodifiable(_cachedPersonas);
+    }
+
+    _cachedPersonas
+      ..clear()
+      ..addAll(loaded);
+
+    // 3. Nếu DB có profiles mà file JSON chính của tài khoản chưa có thì đồng bộ ngược lại JSON
     if (_cachedPersonas.isNotEmpty) {
       try {
         final mainFile = File(_storageFilePath);
@@ -167,11 +209,16 @@ class PersonaService {
     }
 
     _isLoaded = true;
+    _loadedUserKey = activeKey;
     return Map.unmodifiable(_cachedPersonas);
   }
 
-  /// Lưu hoặc cập nhật một nhân vật đơn lẻ vào cả database local và file cache
+  /// Lưu hoặc cập nhật một nhân vật đơn lẻ vào cả database local và file cache của đúng tài khoản
   Future<bool> updatePersona(PersonaProfile persona) async {
+    final activeKey = _effectiveUserKey;
+    if (!_isLoaded || _loadedUserKey != activeKey) {
+      await loadSavedPersonas(forceReload: true);
+    }
     _cachedPersonas[persona.effectiveEntryKey] = persona;
     bool dbOk = false;
     try {
@@ -190,8 +237,12 @@ class PersonaService {
     return dbOk;
   }
 
-  /// Lưu danh sách nhân vật vào cả database SQLite local và file JSON
+  /// Lưu danh sách nhân vật vào cả database SQLite local và file JSON của đúng tài khoản
   Future<void> savePersonas(Map<String, PersonaProfile> personas) async {
+    final activeKey = _effectiveUserKey;
+    if (!_isLoaded || _loadedUserKey != activeKey) {
+      await loadSavedPersonas(forceReload: true);
+    }
     _cachedPersonas.addAll(personas);
     try {
       await _dbService.batchUpsertPersonaProfiles(personas.values.toList());

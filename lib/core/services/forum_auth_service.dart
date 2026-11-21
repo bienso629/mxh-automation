@@ -253,6 +253,8 @@ class ForumAuthService {
             'response': {
               'uid': u['uid'],
               'username': u['username'] ?? username,
+              if (u['email'] != null && u['email'].toString().trim().isNotEmpty)
+                'email': u['email'].toString().trim(),
               'picture': u['picture'],
               'postcount': u['postcount'] ?? 0,
               'reputation': u['reputation'] ?? 0,

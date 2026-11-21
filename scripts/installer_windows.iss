@@ -1,4 +1,4 @@
-; Script tạo bộ cài đặt Windows Installer (Setup .exe) bằng Inno Setup
+﻿; Script tạo bộ cài đặt Windows Installer (Setup .exe) bằng Inno Setup
 ; Dành cho ứng dụng Diễn viên MXH (agent_mxh_auto)
 
 #define MyAppName "Diễn viên MXH"
