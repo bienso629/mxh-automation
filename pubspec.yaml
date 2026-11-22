@@ -54,6 +54,7 @@ dependencies:
   encrypt: ^5.0.3
   file_picker: ^8.1.7
   archive: ^4.0.9
+  mailer: ^7.3.0
 
 dev_dependencies:
   flutter_test:

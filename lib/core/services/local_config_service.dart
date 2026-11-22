@@ -50,6 +50,21 @@ class LocalConfigService {
     'default_execution_mode': 'browser', // 'browser' | 'device'
     'ai_engine_type': 'proxy', // 'proxy' | 'cli'
     'active_cli_agent': 'antigravity-cli',
+    // Giám sát hoàn thành tác vụ AI Agent
+    'agent_max_turns': 80, // Số bước tối đa mỗi yêu cầu
+    'agent_max_continue_nudges': 6, // Số lần buộc Agent làm tiếp khi dừng mà chưa xác nhận hoàn thành
+    'agent_cli_max_attempts': 3, // Số lần chạy lại Local CLI Agent khi chưa có MXH_TASK_STATUS: COMPLETED
+    // Kênh cảnh báo khi tác vụ KHÔNG hoàn thành
+    'notify_webhook_url': '',
+    'notify_webhook_secret': '',
+    'notify_telegram_bot_token': '',
+    'notify_telegram_chat_id': '',
+    'notify_email_to': '',
+    'notify_smtp_host': '',
+    'notify_smtp_port': '465',
+    'notify_smtp_user': '',
+    'notify_smtp_pass': '',
+    'notify_smtp_ssl': true,
     'servers': [],
     'removed_builtin_servers': [],
   };

@@ -167,9 +167,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickFiles() async {
     try {
+      final isDesktop = Platform.isLinux || Platform.isWindows || Platform.isMacOS;
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: true,
-        withData: true,
+        withData: !isDesktop,
       );
 
       if (result != null && result.files.isNotEmpty) {

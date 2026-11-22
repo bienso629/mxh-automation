@@ -415,6 +415,13 @@ def open_browser(ips, url=None):
             "--disable-gpu-compositing"
         ]
 
+        if not sys_profile_id:
+            # Bật DevTools (cổng ngẫu nhiên, chỉ 127.0.0.1) để Agent thao tác trang: bấm, gõ, tải video lên
+            cmd.append("--remote-debugging-port=0")
+            try:
+                os.remove(os.path.join(profile_dir, "DevToolsActivePort"))
+            except Exception:
+                pass
         if socks5_proxy:
             cmd.append(f"--proxy-server={socks5_proxy}")
         if os.path.exists(ext_dir):
@@ -1146,6 +1153,11 @@ if __name__ == "__main__":
     buffer.writeln('   (Lệnh fast-action tự động mở thiết bị nếu chưa mở, mở app vào đúng ảnh/video và bấm like siêu tốc cho tất cả IP).');
     buffer.writeln('7. Tra cứu danh sách nhân vật:');
     buffer.writeln('   $helperPath list-profiles');
+    buffer.writeln('8. ĐIỀU KHIỂN TRANG WEB THẬT (bấm nút, gõ chữ, tải video lên Facebook...):');
+    buffer.writeln('   Trình duyệt profile cô lập được mở kèm Chrome DevTools Protocol. Cổng nằm ở dòng đầu file');
+    buffer.writeln('   ~/.agent_mxh_auto/browser_profiles/<ip_IP hoặc ek_PROFILEKEY>/DevToolsActivePort (dấu . và # thay bằng _).');
+    buffer.writeln('   Danh sách tab: http://127.0.0.1:<port>/json/list. Dùng CDP (Runtime.evaluate, Input.dispatchMouseEvent, Input.insertText, DOM.setFileInputFiles) để thao tác thật.');
+    buffer.writeln('   Mở trình duyệt xong KHÔNG có nghĩa là đã làm xong việc: phải thao tác tiếp đến khi kiểm chứng được kết quả.');
     buffer.writeln('');
 
     // Trích xuất các khóa định danh nhân vật (ProfileKey / entryKey) trong Scope hiện tại nếu có

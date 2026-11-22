@@ -6,7 +6,9 @@ import '../../models/attachment_item.dart';
 import '../../models/chat_message.dart';
 import '../../models/server_model.dart';
 import 'adb_manager_service.dart';
+import 'browser_cdp_service.dart';
 import 'cli_automation_bridge_service.dart';
+import 'task_notification_service.dart';
 import 'database_service.dart';
 import 'local_config_service.dart';
 import 'persona_service.dart';
@@ -59,7 +61,20 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
    - Khi người dùng yêu cầu thực hiện tương tác trên Thiết bị Android (Like, Thả tim, Viết bình luận, Mở video) cho Facebook hoặc TikTok:
      + BẮT BUỘC ƯU TIÊN SỬ DỤNG TOOL `fast_social_action` thay vì tự chạy hàng chục lệnh `execute_adb_command` (như dump xml, grep, sleep...) gây chậm chạp và tốn thời gian.
      + Tool `fast_social_action` sẽ tự động tra cứu bộ nhớ macro riêng của nhân vật theo IP để bấm Like hoặc bình luận ngay lập tức.
-     + Nếu bạn phát hiện tọa độ mới chính xác cho một thao tác đặc thù hoặc độ phân giải mới, hãy gọi `save_automation_macro` để nhân vật đó học và ghi nhớ cho các lần chạy tiếp theo.''';
+     + Nếu bạn phát hiện tọa độ mới chính xác cho một thao tác đặc thù hoặc độ phân giải mới, hãy gọi `save_automation_macro` để nhân vật đó học và ghi nhớ cho các lần chạy tiếp theo.
+
+7. ĐIỀU KHIỂN TRANG WEB THẬT TRONG TRÌNH DUYỆT (BROWSER AUTOMATION):
+   - `open_profile_browser` CHỈ MỞ CỬA SỔ. Mở xong KHÔNG có nghĩa là đã làm xong việc. Phải tiếp tục thao tác bằng các công cụ:
+     `browser_snapshot` (đọc trang + danh sách phần tử có element_id), `browser_click`, `browser_type`, `browser_upload_file`, `browser_press_key`, `browser_scroll`, `browser_wait`, `browser_navigate`, `browser_screenshot`.
+   - Luôn gọi `browser_snapshot` trước khi bấm/gõ để lấy element_id mới nhất; sau mỗi thao tác quan trọng gọi lại `browser_snapshot` để kiểm chứng.
+   - QUY TRÌNH ĐĂNG VIDEO LÊN FACEBOOK (trình duyệt): mở https://www.facebook.com -> snapshot (nếu thấy form đăng nhập: báo failed "chưa đăng nhập") -> bấm "Ảnh/video" (hoặc "Bạn đang nghĩ gì?" rồi "Ảnh/video") -> `browser_upload_file` với đường dẫn tệp local -> `browser_wait` chờ video tải lên/xử lý (có thể vài phút) -> nhập nội dung bài viết vào ô soạn thảo -> bấm "Tiếp"/"Next" nếu có -> bấm "Đăng"/"Post" -> `browser_wait` chờ khung soạn bài đóng -> snapshot kiểm chứng bài đã đăng (hoặc thông báo "Đang xử lý video") -> `browser_screenshot` làm bằng chứng.
+   - Thiết bị Android: dùng `device_push_media` để chép video vào thư viện ảnh trước khi đăng trong app.
+
+8. NGUYÊN TẮC ĐẢM BẢO HOÀN THÀNH 100% (BẮT BUỘC TUYỆT ĐỐI):
+   - Tự chia yêu cầu thành các bước, thực hiện LẦN LƯỢT TẤT CẢ các bước bằng công cụ. Không dừng giữa chừng, không hỏi lại người dùng khi đã đủ thông tin, không chỉ mô tả kế hoạch.
+   - Gặp lỗi ở một bước: tự tìm phương án khác (snapshot lại, tải lại trang, chờ thêm, tìm nút có tên khác, cuộn trang...) rồi làm tiếp.
+   - Chỉ khi đã kiểm chứng kết quả thực tế mới gọi `report_task_result(status="completed", evidence=...)`. Nếu đã thử mọi cách mà vẫn bất khả thi mới gọi `report_task_result(status="failed", failure_reason=...)` - hệ thống sẽ tự gửi cảnh báo Email/tin nhắn cho chủ máy.
+   - Mọi lượt có thao tác thực tế đều PHẢI kết thúc bằng `report_task_result`. Nếu dừng mà không gọi, hệ thống giám sát sẽ buộc bạn làm tiếp.''';
 
   StreamSubscription<String> streamChatMessage({
     required String sessionId,
@@ -103,9 +118,23 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
           final chosenCli = (aiEngineType == 'cli' && !_isCliModel(targetModel))
               ? activeCliAgent
               : targetModel;
+          String cliPrompt = message;
+          if (attachments != null && attachments.isNotEmpty) {
+            final attBuf = StringBuffer(message);
+            attBuf.writeln('\n\n=== TỆP & ẢNH ĐÍNH KÈM TỪ NGƯỜI DÙNG ===');
+            for (final att in attachments) {
+              final localInfo = (att.path != null && att.path!.isNotEmpty)
+                  ? ' (Đường dẫn local: ${att.path} - Dung lượng: ${att.formattedSize})'
+                  : ' (Dung lượng: ${att.formattedSize})';
+              attBuf.writeln('- [${att.name}$localInfo]');
+            }
+            cliPrompt = attBuf.toString();
+          }
           await _runCliAgent(
             cliName: chosenCli,
-            prompt: message,
+            prompt: cliPrompt,
+            sessionId: sessionId,
+            maxAttempts: (int.tryParse('${cfg['agent_cli_max_attempts'] ?? ''}') ?? 3).clamp(1, 10),
             workingDir: workingDir,
             onToken: onToken,
             onStatus: onStatus,
@@ -183,7 +212,14 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
 
         // Append recent history
         if (history != null && history.isNotEmpty) {
-          for (final h in history) {
+          // Bỏ tin nhắn user cuối nếu trùng câu lệnh hiện tại (tránh gửi lặp 2 lần cho AI)
+          final trimmedHistory = List<Map<String, dynamic>>.from(history);
+          if (trimmedHistory.isNotEmpty &&
+              trimmedHistory.last['role'] == 'user' &&
+              (trimmedHistory.last['content']?.toString().trim() ?? '') == message.trim()) {
+            trimmedHistory.removeLast();
+          }
+          for (final h in trimmedHistory) {
             messages.add({
               'role': h['role'] ?? 'user',
               'content': h['content'] ?? '',
@@ -498,112 +534,241 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                 'required': ['command']
               }
             }
-          }
+          },
+          {
+            'type': 'function',
+            'function': {
+              'name': 'report_task_result',
+              'description': 'BẮT BUỘC gọi ở cuối mọi yêu cầu có thao tác. Báo cáo kết quả cuối cùng cho hệ thống giám sát. status="completed" chỉ khi đã kiểm chứng xong 100% (kèm evidence cụ thể). status="failed" chỉ khi đã thử mọi phương án mà vẫn bất khả thi (kèm failure_reason) - hệ thống sẽ gửi cảnh báo Email/tin nhắn cho chủ máy.',
+              'parameters': {
+                'type': 'object',
+                'properties': {
+                  'status': {'type': 'string', 'enum': ['completed', 'failed']},
+                  'summary': {'type': 'string', 'description': 'Tóm tắt các bước đã làm'},
+                  'evidence': {'type': 'string', 'description': 'Bằng chứng kiểm chứng (ví dụ: chữ hiển thị trên trang sau khi đăng, URL bài viết, đường dẫn ảnh chụp màn hình)'},
+                  'failure_reason': {'type': 'string', 'description': 'Lý do cụ thể không thể hoàn thành'},
+                },
+                'required': ['status', 'summary'],
+              }
+            }
+          },
+          if (!isForcedDeviceMode) ...[
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_navigate',
+                'description': 'Điều hướng tab hiện tại của trình duyệt nhân vật tới URL (tự mở trình duyệt có thể điều khiển nếu chưa mở).',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string', 'description': 'ProfileKey của nhân vật'},
+                    'url': {'type': 'string'},
+                  },
+                  'required': ['url'],
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_snapshot',
+                'description': 'Đọc trạng thái trang hiện tại: URL, tiêu đề, hộp thoại đang mở, danh sách phần tử tương tác (element_id, nhãn, disabled, ô chọn tệp) và trích đoạn nội dung. Gọi trước mỗi lần bấm/gõ và sau mỗi bước để kiểm chứng.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string', 'description': 'ProfileKey của nhân vật'},
+                  },
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_click',
+                'description': 'Bấm chuột thật vào phần tử theo element_id (từ browser_snapshot) hoặc theo chữ hiển thị / aria-label.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'element_id': {'type': 'integer'},
+                    'text': {'type': 'string', 'description': 'Chữ hoặc aria-label của nút nếu không có element_id'},
+                  },
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_type',
+                'description': 'Gõ văn bản vào ô nhập / ô soạn thảo (contenteditable) theo element_id hoặc target_text.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'element_id': {'type': 'integer'},
+                    'target_text': {'type': 'string', 'description': 'Placeholder/aria-label của ô nếu không có element_id'},
+                    'text': {'type': 'string'},
+                    'clear': {'type': 'boolean', 'description': 'Xóa nội dung cũ trước khi gõ'},
+                  },
+                  'required': ['text'],
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_upload_file',
+                'description': 'Gắn tệp local (video/ảnh) vào ô chọn tệp input[type=file] của trang (ví dụ sau khi bấm "Ảnh/video" trên Facebook). Không cần hộp thoại chọn tệp của hệ điều hành.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'file_path': {'type': 'string', 'description': 'Đường dẫn tuyệt đối tới tệp trên máy local'},
+                    'element_id': {'type': 'integer', 'description': 'element_id của ô chọn tệp (tùy chọn)'},
+                  },
+                  'required': ['file_path'],
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_press_key',
+                'description': 'Nhấn phím: Enter, Escape, Tab, Backspace, ArrowDown, ArrowUp, Space.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'key': {'type': 'string'},
+                  },
+                  'required': ['key'],
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_scroll',
+                'description': 'Cuộn trang theo pixel (delta_y dương: xuống, âm: lên).',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'delta_y': {'type': 'integer'},
+                  },
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_wait',
+                'description': 'Chờ tối đa seconds giây cho đến khi trang xuất hiện chữ text (hoặc chữ đó biến mất nếu until_gone=true). Dùng để chờ video tải lên / xử lý / đăng xong.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                    'text': {'type': 'string'},
+                    'until_gone': {'type': 'boolean'},
+                    'seconds': {'type': 'integer', 'description': 'Tối đa 600'},
+                  },
+                }
+              }
+            },
+            {
+              'type': 'function',
+              'function': {
+                'name': 'browser_screenshot',
+                'description': 'Chụp màn hình tab hiện tại, lưu file PNG làm bằng chứng hoàn thành.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string'},
+                  },
+                }
+              }
+            },
+          ],
+          if (!isForcedBrowserMode)
+            {
+              'type': 'function',
+              'function': {
+                'name': 'device_push_media',
+                'description': 'Chép tệp video/ảnh từ máy local vào thư viện ảnh (DCIM/Camera) của thiết bị Android nhân vật để đăng trong app.',
+                'parameters': {
+                  'type': 'object',
+                  'properties': {
+                    'ip': {'type': 'string', 'description': 'ProfileKey của nhân vật'},
+                    'serial': {'type': 'string', 'description': 'Serial ADB (tùy chọn)'},
+                    'file_path': {'type': 'string'},
+                  },
+                  'required': ['file_path'],
+                }
+              }
+            },
         ];
 
         String finalReply = '';
         final streamedBuffer = StringBuffer();
         final allExecutedTools = <ToolExecutionItem>[];
         int turnCount = 0;
-        const maxTurns = 20;
+        final maxTurns = (int.tryParse('${cfg['agent_max_turns'] ?? ''}') ?? 80).clamp(10, 400);
+        final maxNudges = (int.tryParse('${cfg['agent_max_continue_nudges'] ?? ''}') ?? 6).clamp(1, 30);
+        int nudges = 0;
+        int failureChallenges = 0;
+        Map<String, String>? taskReport;
+        String? fatalError;
+        bool actionToolUsed = false;
+        final looksActionable = _looksLikeActionRequest(message);
+        const passiveTools = {
+          'list_profiles',
+          'get_connected_devices',
+          'report_task_result',
+          'browser_snapshot',
+          'browser_screenshot',
+        };
 
         while (turnCount < maxTurns && !isCancelled) {
           turnCount++;
-          final client = http.Client();
-          final request = http.Request('POST', Uri.parse('$baseUrl/chat/completions'));
-          request.headers.addAll({
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
-          });
+          onStatus(turnCount == 1 ? 'Đang suy nghĩ...' : 'Đang xử lý bước tiếp theo ($turnCount/$maxTurns)...');
 
-          final requestBody = {
-            'model': targetModel,
-            'messages': messages,
-            'tools': tools,
-            'stream': true,
-          };
-          request.body = jsonEncode(requestBody);
-
-          onStatus(turnCount == 1 ? 'Đang suy nghĩ...' : 'Đang xử lý bước tiếp theo...');
-          final response = await client.send(request);
-
-          if (response.statusCode != 200) {
-            final errBody = await response.stream.bytesToString();
-            onError('AI API Error (${response.statusCode}): $errBody');
-            client.close();
-            return;
+          // Gọi AI có tự động thử lại khi mạng/API chập chờn (nguyên nhân phổ biến khiến Agent dừng giữa chừng)
+          _AiTurnResult? turn;
+          Object? lastTurnError;
+          for (int attempt = 1; attempt <= 4 && !isCancelled; attempt++) {
+            try {
+              turn = await _streamCompletionTurn(
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                body: {
+                  'model': targetModel,
+                  'messages': messages,
+                  'tools': tools,
+                  'stream': true,
+                },
+                onToken: onToken,
+              );
+              break;
+            } on _NonRetryableAiError catch (e) {
+              lastTurnError = e;
+              break;
+            } catch (e) {
+              lastTurnError = e;
+              if (attempt < 4) {
+                onStatus('Kết nối AI bị gián đoạn (lần $attempt/4), đang tự động thử lại...');
+                await Future.delayed(Duration(seconds: 2 * attempt));
+              }
+            }
+          }
+          if (isCancelled) break;
+          if (turn == null) {
+            fatalError = 'Không gọi được AI API sau nhiều lần thử: $lastTurnError';
+            break;
           }
 
-          String stepContent = '';
-          final toolCallsMap = <int, Map<String, dynamic>>{};
-
-          final streamCompleter = Completer<void>();
-
-          response.stream
-              .transform(utf8.decoder)
-              .transform(const LineSplitter())
-              .listen(
-            (line) {
-              final trimmed = line.trim();
-              if (trimmed.isEmpty) return;
-              if (trimmed == 'data: [DONE]') {
-                return;
-              }
-              if (trimmed.startsWith('data:')) {
-                final jsonStr = trimmed.substring(5).trim();
-                try {
-                  final data = jsonDecode(jsonStr);
-                  final choices = data['choices'] as List<dynamic>?;
-                  if (choices != null && choices.isNotEmpty) {
-                    final delta = choices[0]['delta'] as Map<String, dynamic>?;
-                    if (delta != null) {
-                      // Text content delta
-                      if (delta['content'] != null) {
-                        final token = delta['content'].toString();
-                        stepContent += token;
-                        streamedBuffer.write(token);
-                        onToken(token);
-                      }
-
-                      // Tool calls delta
-                      if (delta['tool_calls'] != null) {
-                        final tcs = delta['tool_calls'] as List<dynamic>;
-                        for (final tc in tcs) {
-                          final idx = tc['index'] as int? ?? 0;
-                          toolCallsMap.putIfAbsent(idx, () => {
-                            'id': tc['id'] ?? '',
-                            'name': tc['function']?['name'] ?? '',
-                            'arguments': '',
-                          });
-                          if (tc['id'] != null && tc['id'].toString().isNotEmpty) {
-                            toolCallsMap[idx]!['id'] = tc['id'];
-                          }
-                          if (tc['function']?['name'] != null) {
-                            toolCallsMap[idx]!['name'] = tc['function']['name'];
-                          }
-                          if (tc['function']?['arguments'] != null) {
-                            toolCallsMap[idx]!['arguments'] =
-                                (toolCallsMap[idx]!['arguments'] as String) + tc['function']['arguments'].toString();
-                          }
-                        }
-                      }
-                    }
-                  }
-                } catch (_) {}
-              }
-            },
-            onError: (err) {
-              if (!streamCompleter.isCompleted) streamCompleter.completeError(err);
-            },
-            onDone: () {
-              if (!streamCompleter.isCompleted) streamCompleter.complete();
-              client.close();
-            },
-            cancelOnError: true,
-          );
-
-          await streamCompleter.future;
+          final String stepContent = turn.content;
+          streamedBuffer.write(stepContent);
+          final toolCallsMap = turn.toolCalls;
 
           // Check if tools were called
           if (toolCallsMap.isNotEmpty) {
@@ -1218,6 +1383,49 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                     toolOutput = stdoutStr.isNotEmpty ? stdoutStr : (stderrStr.isNotEmpty ? stderrStr : 'Lệnh thực thi thành công (Exit code: ${procRes.exitCode}).');
                     break;
 
+                  case 'report_task_result':
+                    final reportStatus = parsedArgs['status']?.toString().trim().toLowerCase() ?? '';
+                    final reportSummary = parsedArgs['summary']?.toString().trim() ?? '';
+                    final reportEvidence = parsedArgs['evidence']?.toString().trim() ?? '';
+                    final reportReason = parsedArgs['failure_reason']?.toString().trim() ?? '';
+                    if (reportStatus == 'completed') {
+                      if (reportEvidence.isEmpty) {
+                        toolOutput = 'TỪ CHỐI XÁC NHẬN HOÀN THÀNH: status="completed" bắt buộc kèm evidence (bằng chứng kiểm chứng thực tế). Hãy kiểm tra lại trạng thái thật (browser_snapshot / browser_wait / browser_screenshot / uiautomator dump) rồi gọi lại.';
+                      } else {
+                        taskReport = {'status': 'completed', 'summary': reportSummary, 'evidence': reportEvidence};
+                        toolOutput = 'ĐÃ GHI NHẬN HOÀN THÀNH 100%. Hãy trả lời người dùng ngắn gọn về kết quả.';
+                      }
+                    } else if (reportStatus == 'failed') {
+                      if (reportReason.isEmpty) {
+                        toolOutput = 'TỪ CHỐI: status="failed" bắt buộc kèm failure_reason cụ thể.';
+                      } else if (failureChallenges < 1) {
+                        failureChallenges++;
+                        toolOutput = 'CHƯA CHẤP NHẬN KẾT LUẬN THẤT BẠI. Trước khi bỏ cuộc hãy thử ít nhất 1 phương án thay thế (browser_snapshot lại, tải lại trang bằng browser_navigate, chờ thêm bằng browser_wait, tìm nút có tên khác, cuộn trang, đóng hộp thoại che bằng phím Escape...). Nếu sau khi thử vẫn bất khả thi, gọi lại report_task_result(status="failed", failure_reason=...).';
+                      } else {
+                        taskReport = {'status': 'failed', 'summary': reportSummary, 'reason': reportReason};
+                        toolOutput = 'ĐÃ GHI NHẬN KHÔNG THỂ HOÀN THÀNH. Hệ thống sẽ tự động gửi cảnh báo cho chủ máy. Hãy giải thích ngắn gọn cho người dùng.';
+                      }
+                    } else {
+                      toolOutput = 'Lỗi: status chỉ nhận "completed" hoặc "failed".';
+                    }
+                    break;
+
+                  case 'browser_navigate':
+                  case 'browser_snapshot':
+                  case 'browser_click':
+                  case 'browser_type':
+                  case 'browser_upload_file':
+                  case 'browser_press_key':
+                  case 'browser_scroll':
+                  case 'browser_wait':
+                  case 'browser_screenshot':
+                    toolOutput = await _executeBrowserTool(funcName, parsedArgs, allowedScopeIps, cfg, onStatus);
+                    break;
+
+                  case 'device_push_media':
+                    toolOutput = await _executeDevicePushMedia(parsedArgs, allowedScopeIps);
+                    break;
+
                   default:
                     toolOutput = 'Công cụ $funcName không được hỗ trợ.';
                     break;
@@ -1232,6 +1440,7 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                 output: toolOutput,
               );
               allExecutedTools.add(finishedTool);
+              if (!passiveTools.contains(funcName)) actionToolUsed = true;
               onTool(finishedTool);
 
               executedToolResults.add({
@@ -1261,7 +1470,31 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
               streamedBuffer.write('\n\n');
               onToken('\n\n');
             }
+
+            // Agent đã báo cáo kết quả cuối cùng -> kết thúc vòng lặp, sang bước tổng hợp
+            if (taskReport != null) break;
           } else {
+            // Agent muốn dừng mà không gọi thêm công cụ.
+            // GIÁM SÁT HOÀN THÀNH: nếu đây là tác vụ có thao tác mà chưa có report_task_result -> buộc làm tiếp.
+            final requireReport = actionToolUsed || looksActionable;
+            if (requireReport && taskReport == null && nudges < maxNudges && turnCount < maxTurns) {
+              nudges++;
+              messages.add({
+                'role': 'assistant',
+                'content': stepContent.isNotEmpty ? stepContent : '(Agent dừng lại nhưng chưa báo cáo kết quả)',
+              });
+              messages.add({
+                'role': 'user',
+                'content': _buildContinuationPrompt(nudges, maxNudges),
+              });
+              if (stepContent.isNotEmpty) {
+                streamedBuffer.write('\n\n');
+                onToken('\n\n');
+              }
+              onStatus('Giám sát hoàn thành: chưa xác nhận xong 100%, buộc Agent tiếp tục ($nudges/$maxNudges)...');
+              continue;
+            }
+
             // Finished generation without more tools
             finalReply = streamedBuffer.toString().trim();
             if (finalReply.isEmpty) {
@@ -1274,6 +1507,7 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         // Nếu vòng lặp dừng ngay sau khi chạy tool (ví dụ chạm maxTurns) hoặc chưa có lời kết tự nhiên,
         // gọi 1 lượt tổng hợp cuối cùng không đính kèm tools để Agent trả lời tự nhiên thay vì in log kỹ thuật.
         if (!isCancelled &&
+            fatalError == null &&
             allExecutedTools.isNotEmpty &&
             (finalReply.isEmpty || (messages.isNotEmpty && messages.last['role'] == 'tool'))) {
           try {
@@ -1346,12 +1580,50 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
           );
         }
 
-        if (finalReply.isEmpty && allExecutedTools.isNotEmpty) {
+        if (finalReply.isEmpty && fatalError != null) {
+          finalReply = 'Lỗi: $fatalError';
+          onToken(finalReply);
+        } else if (finalReply.isEmpty && allExecutedTools.isNotEmpty) {
           finalReply = _buildCleanToolFallback(allExecutedTools);
           onToken(finalReply);
         } else if (finalReply.isEmpty) {
           finalReply = 'Đã hoàn tất thao tác.';
           onToken(finalReply);
+        }
+
+        // ===== GIÁM SÁT HOÀN THÀNH 100% & CẢNH BÁO KHI KHÔNG HOÀN THÀNH =====
+        if (!isCancelled) {
+          String outcome = 'chat';
+          String? failureReason;
+          if (fatalError != null) {
+            outcome = 'error';
+            failureReason = fatalError;
+          } else if (taskReport?['status'] == 'completed') {
+            outcome = 'completed';
+          } else if (taskReport?['status'] == 'failed') {
+            outcome = 'failed';
+            failureReason = taskReport!['reason'];
+          } else if (actionToolUsed || looksActionable) {
+            outcome = 'incomplete';
+            failureReason = turnCount >= maxTurns
+                ? 'Đã chạy hết giới hạn $maxTurns bước mà Agent vẫn chưa xác nhận hoàn thành.'
+                : 'Agent dừng lại mà không xác nhận hoàn thành dù đã bị buộc tiếp tục $nudges lần.';
+          }
+          final monitorText = await _finalizeMonitoring(
+            outcome: outcome,
+            failureReason: failureReason,
+            taskReport: taskReport,
+            userRequest: message,
+            sessionId: sessionId,
+            engine: targetModel,
+            scopeKeys: allowedScopeIps,
+            executedTools: allExecutedTools,
+            onStatus: onStatus,
+          );
+          if (monitorText.isNotEmpty) {
+            finalReply = '$finalReply$monitorText';
+            onToken(monitorText);
+          }
         }
 
         // Save assistant message to Database
@@ -1367,6 +1639,15 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         onDone(finalReply);
       } catch (e) {
         if (!isCancelled) {
+          unawaited(TaskNotificationService()
+              .notifyTaskFailure(
+                userRequest: message,
+                reason: 'Lỗi xử lý AI: $e',
+                outcome: 'error',
+                sessionId: sessionId,
+                engine: model,
+              )
+              .catchError((_) => const TaskNotificationResult(delivered: [], errors: {})));
           onError('Lỗi xử lý AI: $e');
         }
       }
@@ -1456,10 +1737,323 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     return cliName;
   }
 
+  // ===================== GIÁM SÁT HOÀN THÀNH 100% =====================
+
+  static const List<String> _actionKeywords = [
+    'đăng', 'upload', 'tải lên', 'up video', 'like', 'thả tim', 'bình luận', 'comment', 'share', 'chia sẻ',
+    'mở', 'xem', 'video', 'reel', 'livestream', 'follow', 'theo dõi', 'kết bạn', 'nhắn tin', 'gửi',
+    'post', 'đọc', 'lướt', 'tương tác', 'đăng nhập', 'login', 'seeding', 'chạy', 'thực hiện', 'tự động',
+  ];
+
+  bool _looksLikeActionRequest(String message) => isActionRequest(message);
+
+  String _buildContinuationPrompt(int nudge, int maxNudges) {
+    return '[HỆ THỐNG GIÁM SÁT HOÀN THÀNH - lần nhắc $nudge/$maxNudges]\n'
+        'Bạn vừa dừng lại nhưng CHƯA xác nhận yêu cầu của người dùng đã hoàn thành 100%.\n'
+        '- Đối chiếu lại yêu cầu gốc, xác định các bước còn thiếu và TIẾP TỤC THỰC HIỆN NGAY bằng công cụ (không hỏi lại người dùng, không chỉ mô tả kế hoạch).\n'
+        '- Kiểm tra trạng thái thực tế (browser_snapshot hoặc execute_adb_command "shell uiautomator dump") sau mỗi bước quan trọng.\n'
+        '- Khi đã xong toàn bộ và kiểm chứng được kết quả: gọi report_task_result(status="completed", summary=..., evidence=<bằng chứng cụ thể>).\n'
+        '- Nếu đã thử mọi phương án mà vẫn bất khả thi (chưa đăng nhập, tài khoản bị khóa/checkpoint, tệp không tồn tại...): gọi report_task_result(status="failed", failure_reason=...).\n'
+        '- Nếu yêu cầu chỉ là hỏi đáp / lập kế hoạch không cần thao tác: gọi report_task_result(status="completed", summary=..., evidence="Đã trả lời đầy đủ nội dung được hỏi").';
+  }
+
+  /// Gọi 1 lượt chat completion dạng stream. Ném [_NonRetryableAiError] với lỗi không nên thử lại (400/401/403/404).
+  Future<_AiTurnResult> _streamCompletionTurn({
+    required String baseUrl,
+    required String apiKey,
+    required Map<String, dynamic> body,
+    required void Function(String token) onToken,
+  }) async {
+    final client = http.Client();
+    try {
+      final request = http.Request('POST', Uri.parse('$baseUrl/chat/completions'));
+      request.headers.addAll({
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
+      });
+      request.body = jsonEncode(body);
+      final response = await client.send(request).timeout(const Duration(seconds: 90));
+      if (response.statusCode != 200) {
+        final errBody = await response.stream.bytesToString();
+        final short = errBody.length > 500 ? '${errBody.substring(0, 500)}...' : errBody;
+        final msg = 'AI API Error (${response.statusCode}): $short';
+        if (response.statusCode == 408 || response.statusCode == 429 || response.statusCode >= 500) {
+          throw Exception(msg);
+        }
+        throw _NonRetryableAiError(msg);
+      }
+
+      final content = StringBuffer();
+      final toolCallsMap = <int, Map<String, dynamic>>{};
+      await for (final line in response.stream
+          .timeout(const Duration(seconds: 150))
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty || trimmed == 'data: [DONE]' || !trimmed.startsWith('data:')) continue;
+        try {
+          final data = jsonDecode(trimmed.substring(5).trim());
+          final choices = data['choices'] as List<dynamic>?;
+          if (choices == null || choices.isEmpty) continue;
+          final delta = choices[0]['delta'] as Map<String, dynamic>?;
+          if (delta == null) continue;
+          if (delta['content'] != null) {
+            final token = delta['content'].toString();
+            content.write(token);
+            onToken(token);
+          }
+          if (delta['tool_calls'] != null) {
+            for (final tc in delta['tool_calls'] as List<dynamic>) {
+              final idx = tc['index'] as int? ?? 0;
+              toolCallsMap.putIfAbsent(idx, () => {
+                    'id': tc['id'] ?? '',
+                    'name': tc['function']?['name'] ?? '',
+                    'arguments': '',
+                  });
+              if (tc['id'] != null && tc['id'].toString().isNotEmpty) {
+                toolCallsMap[idx]!['id'] = tc['id'];
+              }
+              if (tc['function']?['name'] != null) {
+                toolCallsMap[idx]!['name'] = tc['function']['name'];
+              }
+              if (tc['function']?['arguments'] != null) {
+                toolCallsMap[idx]!['arguments'] =
+                    (toolCallsMap[idx]!['arguments'] as String) + tc['function']['arguments'].toString();
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      return _AiTurnResult(content.toString(), toolCallsMap);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Xác định ProfileKey mục tiêu cho công cụ, luôn tôn trọng phạm vi Scope
+  String? _resolveTargetKey(Map<String, dynamic> args, List<String> scope) {
+    final ip = args['ip']?.toString().trim() ?? '';
+    if (scope.isNotEmpty) {
+      if (ip.isNotEmpty && scope.contains(ip)) return ip;
+      if (ip.isEmpty || scope.length == 1) return scope.first;
+      return null;
+    }
+    return ip.isNotEmpty ? ip : null;
+  }
+
+  static int? _asInt(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString().trim());
+  }
+
+  Future<String> _executeBrowserTool(
+    String funcName,
+    Map<String, dynamic> args,
+    List<String> scope,
+    Map<String, dynamic> cfg,
+    void Function(String status) onStatus,
+  ) async {
+    final key = _resolveTargetKey(args, scope);
+    if (key == null) {
+      return 'LỖI: Thiếu hoặc sai tham số ip (ProfileKey) của nhân vật trong phạm vi Scope. Gọi list_profiles để lấy đúng ProfileKey.';
+    }
+    final cdp = BrowserCdpService();
+    final cleanIp = Socks5ProxyService.extractCleanIp(key);
+
+    // Bảo đảm trình duyệt đang mở VÀ điều khiển được (có cổng DevTools)
+    var port = await cdp.getDebugPort(key);
+    if (port == null) {
+      if (_personaService.allPersonas.isEmpty) {
+        try {
+          await _personaService.loadSavedPersonas();
+        } catch (_) {}
+      }
+      final persona = _personaService.getPersona(key);
+      final sysProfile = persona?.browserProfileId?.trim() ?? '';
+      if (sysProfile.isNotEmpty) {
+        return 'LỖI: Nhân vật $key đang gắn profile trình duyệt hệ thống ($sysProfile) nên không thể điều khiển tự động. Cần bỏ gắn profile hệ thống trong hồ sơ nhân vật để dùng profile cô lập.';
+      }
+      onStatus('Đang chuẩn bị trình duyệt có thể điều khiển tự động cho $key...');
+      if (_socks5Service.isBrowserRunningForIp(cleanIp, entryKey: key)) {
+        await _socks5Service.closeBrowserForIp(cleanIp, entryKey: key);
+        await Future.delayed(const Duration(seconds: 2));
+      }
+      final servers = await _configService.getServers();
+      final server = servers.isEmpty
+          ? ServerModel.fromJson(cfg)
+          : servers.firstWhere((s) => s.isSelected, orElse: () => servers.first);
+      final navUrl = args['url']?.toString().trim() ?? '';
+      final startUrl = (funcName == 'browser_navigate' && navUrl.isNotEmpty) ? navUrl : 'https://www.facebook.com/';
+      try {
+        await _socks5Service.launchPersonaBrowser(ip: cleanIp, entryKey: key, server: server, startUrl: startUrl);
+      } catch (e) {
+        return 'LỖI: Không mở được trình duyệt cho $key: $e';
+      }
+      port = await cdp.waitForDebugPort(key);
+      if (port == null) {
+        return 'LỖI: Trình duyệt đã mở nhưng không bật được cổng điều khiển tự động (DevTools) cho $key.';
+      }
+      await Future.delayed(const Duration(seconds: 3));
+    }
+
+    try {
+      switch (funcName) {
+        case 'browser_navigate':
+          final url = args['url']?.toString().trim() ?? '';
+          if (url.isEmpty) return 'LỖI: Thiếu url.';
+          return await cdp.navigate(key, url);
+        case 'browser_snapshot':
+          return await cdp.snapshot(key);
+        case 'browser_click':
+          return await cdp.click(key, elementId: _asInt(args['element_id']), text: args['text']?.toString());
+        case 'browser_type':
+          final text = args['text']?.toString() ?? '';
+          if (text.isEmpty) return 'LỖI: Thiếu text cần gõ.';
+          return await cdp.type(
+            key,
+            elementId: _asInt(args['element_id']),
+            targetText: args['target_text']?.toString(),
+            text: text,
+            clear: args['clear'] == true,
+          );
+        case 'browser_upload_file':
+          final path = args['file_path']?.toString().trim() ?? '';
+          if (path.isEmpty) return 'LỖI: Thiếu file_path.';
+          return await cdp.uploadFile(key, filePath: path, elementId: _asInt(args['element_id']));
+        case 'browser_press_key':
+          return await cdp.pressKey(key, args['key']?.toString() ?? 'Enter');
+        case 'browser_scroll':
+          return await cdp.scroll(key, _asInt(args['delta_y']) ?? 600);
+        case 'browser_wait':
+          return await cdp.waitFor(
+            key,
+            text: args['text']?.toString(),
+            untilGone: args['until_gone'] == true,
+            seconds: _asInt(args['seconds']) ?? 10,
+          );
+        case 'browser_screenshot':
+          return await cdp.screenshot(key);
+      }
+    } on CdpUnavailableException catch (e) {
+      return 'LỖI: $e';
+    } catch (e) {
+      await cdp.disconnect(key);
+      return 'LỖI khi thao tác trình duyệt: $e. Hãy gọi browser_snapshot để kiểm tra lại trạng thái trang rồi thử lại.';
+    }
+    return 'LỖI: Công cụ $funcName không được hỗ trợ.';
+  }
+
+  Future<String> _executeDevicePushMedia(Map<String, dynamic> args, List<String> scope) async {
+    final path = args['file_path']?.toString().trim() ?? '';
+    if (path.isEmpty || !File(path).existsSync()) {
+      return 'LỖI: Tệp không tồn tại trên máy local: $path';
+    }
+    var serial = args['serial']?.toString().trim() ?? '';
+    if (serial.isEmpty) {
+      final key = _resolveTargetKey(args, scope);
+      if (key == null) return 'LỖI: Thiếu ip (ProfileKey) hoặc serial của thiết bị.';
+      serial = await _socks5Service.getRunningDeviceSerialForIp(
+            Socks5ProxyService.extractCleanIp(key),
+            entryKey: key,
+          ) ??
+          '';
+    }
+    if (serial.isEmpty) {
+      return 'LỖI: Thiết bị của nhân vật chưa chạy. Hãy gọi open_profile_device trước rồi thử lại.';
+    }
+    final adb = await _adbManagerService.resolveAdbPath();
+    final baseName = path.split(Platform.pathSeparator).last.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    final remote = '/sdcard/DCIM/Camera/$baseName';
+    await Process.run(adb, ['-s', serial, 'shell', 'mkdir', '-p', '/sdcard/DCIM/Camera']);
+    final push = await Process.run(adb, ['-s', serial, 'push', path, remote]);
+    if (push.exitCode != 0) {
+      return 'LỖI: adb push thất bại: ${push.stderr.toString().trim()}';
+    }
+    await Process.run(adb, [
+      '-s', serial, 'shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', 'file://$remote',
+    ]);
+    return 'Đã chép tệp vào thư viện ảnh thiết bị $serial: $remote (đã quét media, tệp sẽ hiện trong Thư viện/Gallery của app).';
+  }
+
+  /// Tổng kết giám sát: trả về đoạn văn bản nối vào câu trả lời và gửi cảnh báo nếu không hoàn thành
+  Future<String> _finalizeMonitoring({
+    required String outcome,
+    String? failureReason,
+    Map<String, String>? taskReport,
+    required String userRequest,
+    String? sessionId,
+    String? engine,
+    List<String> scopeKeys = const [],
+    List<ToolExecutionItem> executedTools = const [],
+    List<String> extraSteps = const [],
+    required void Function(String status) onStatus,
+  }) async {
+    if (outcome == 'chat') return '';
+    if (outcome == 'completed') {
+      final ev = taskReport?['evidence'] ?? '';
+      return '\n\n---\n**Giám sát tác vụ: ĐÃ HOÀN THÀNH 100%**${ev.isNotEmpty ? '\n- Bằng chứng: $ev' : ''}';
+    }
+
+    onStatus('Tác vụ chưa hoàn thành, đang gửi cảnh báo cho chủ máy...');
+    final steps = <String>[
+      ...executedTools.reversed.take(12).toList().reversed.map((t) {
+        final out = t.output.replaceAll(RegExp(r'\s+'), ' ');
+        return '${t.command} => ${out.length > 200 ? '${out.substring(0, 200)}...' : out}';
+      }),
+      ...extraSteps,
+    ];
+    TaskNotificationResult? res;
+    try {
+      res = await TaskNotificationService().notifyTaskFailure(
+        userRequest: userRequest,
+        reason: failureReason ?? 'Không rõ nguyên nhân',
+        outcome: outcome,
+        sessionId: sessionId,
+        engine: engine,
+        personas: scopeKeys,
+        recentSteps: steps,
+      );
+    } catch (_) {}
+    final label = outcome == 'failed'
+        ? 'KHÔNG THỂ HOÀN THÀNH'
+        : (outcome == 'error' ? 'LỖI HỆ THỐNG - CHƯA HOÀN THÀNH' : 'CHƯA HOÀN THÀNH');
+    return '\n\n---\n**Giám sát tác vụ: $label**\n'
+        '- Lý do: ${failureReason ?? 'Không rõ'}\n'
+        '- Cảnh báo: ${res?.describe() ?? 'Gửi cảnh báo thất bại'}';
+  }
+
+  // ===================== LOCAL CLI AGENT =====================
+
+  static final RegExp _cliStatusRegex =
+      RegExp(r'MXH_TASK_STATUS\s*:\s*(COMPLETED|FAILED)\s*(?:[:|\-]\s*(.*))?', caseSensitive: false);
+
+  static String _tail(String s, int max) => s.length <= max ? s : s.substring(s.length - max);
+
+  /// Phân tích dòng trạng thái hoàn thành của Local CLI Agent.
+  /// Trả về status = 'completed' | 'failed' | null (không có dòng trạng thái) và lý do nếu thất bại.
+  static ({String? status, String? reason}) parseCliTaskStatus(String output) {
+    final matches = _cliStatusRegex.allMatches(output).toList();
+    if (matches.isEmpty) return (status: null, reason: null);
+    final m = matches.last;
+    if (m.group(1)!.toUpperCase() == 'COMPLETED') return (status: 'completed', reason: null);
+    final r = (m.group(2) ?? '').trim();
+    return (status: 'failed', reason: r.isNotEmpty ? r : 'Agent báo thất bại nhưng không nêu lý do');
+  }
+
+  /// Kiểm tra yêu cầu có chứa thao tác cần giám sát hoàn thành hay không
+  static bool isActionRequest(String message) {
+    final lower = message.toLowerCase();
+    return _actionKeywords.any((k) => lower.contains(k));
+  }
+
   Future<void> _runCliAgent({
     required String cliName,
     required String prompt,
     String? workingDir,
+    String? sessionId,
+    int maxAttempts = 3,
     required void Function(String token) onToken,
     required void Function(String status) onStatus,
     required void Function(ToolExecutionItem tool) onTool,
@@ -1470,6 +2064,14 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     final exe = _findCliExecutable(cliName);
     onStatus('Đang khởi chạy $cliName agent...');
 
+    final scopeKeys = workingDir == null
+        ? <String>[]
+        : RegExp(r'ProfileKey:\s*([0-9a-zA-Z\.\:\_\-#]+)')
+            .allMatches(workingDir)
+            .map((m) => m.group(1)!.trim())
+            .toSet()
+            .toList();
+
     try {
       final workDir = (workingDir != null && Directory(workingDir).existsSync())
           ? workingDir
@@ -1479,24 +2081,20 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
       final bridgeService = CliAutomationBridgeService();
       final systemContext = await bridgeService.buildCliSystemContext(workingDir: workingDir);
 
-      final cleanPrompt = '''$systemContext
+      final basePrompt = '''$systemContext
 
 === YÊU CẦU TỪ NGƯỜI DÙNG ===
 $prompt
 
-(Yêu cầu thực thi: Nếu người dùng yêu cầu mở/đóng trình duyệt, xem link hay auto thiết bị, hãy sử dụng lệnh terminal được cấp ở trên để thực thi ngay lập tức. Tuyệt đối không dùng emoji hay icon trong câu trả lời, trình bày kết quả rõ ràng)''';
+=== HỢP ĐỒNG HOÀN THÀNH 100% (BẮT BUỘC) ===
+- Phải thực hiện TRỌN VẸN mọi bước của yêu cầu trên bằng lệnh terminal thực tế, không dừng giữa chừng, không chỉ mô tả kế hoạch, không hỏi lại người dùng.
+- Sau mỗi bước quan trọng phải tự kiểm chứng trạng thái thực tế (ví dụ đọc lại trang qua DevTools, chụp màn hình, dump UI thiết bị).
+- Dòng CUỐI CÙNG của câu trả lời BẮT BUỘC là đúng một trong hai dạng:
+  MXH_TASK_STATUS: COMPLETED
+  MXH_TASK_STATUS: FAILED: <lý do cụ thể không thể hoàn thành>
+- Chỉ ghi COMPLETED khi đã kiểm chứng xong 100%. Nếu thiếu dòng này, hệ thống coi là CHƯA HOÀN THÀNH và sẽ buộc chạy tiếp; hết lượt sẽ gửi cảnh báo cho chủ máy.
 
-      List<String> args;
-      final m = cliName.toLowerCase();
-      if (m.contains('claude')) {
-        args = ['-p', cleanPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
-      } else if (m.contains('antigravity') || m == 'agy') {
-        args = ['--print', cleanPrompt, '--output-format', 'stream-json', '--dangerously-skip-permissions'];
-      } else if (m.contains('gemini')) {
-        args = ['-p', cleanPrompt];
-      } else {
-        args = ['-p', cleanPrompt, '--dangerously-skip-permissions'];
-      }
+(Yêu cầu thực thi: Nếu người dùng yêu cầu mở/đóng trình duyệt, xem link hay auto thiết bị, hãy sử dụng lệnh terminal được cấp ở trên để thực thi ngay lập tức. Tuyệt đối không dùng emoji hay icon trong câu trả lời, trình bày kết quả rõ ràng)''';
 
       // Augmented PATH environment so subprocesses (mxh-tool, node, git, etc.) are always found
       final env = Map<String, String>.from(Platform.environment);
@@ -1523,27 +2121,161 @@ $prompt
       }
       env['PATH'] = '${extraPaths.join(':')}:$currentPath';
 
-      onStatus('AI Agent $cliName đang phân tích và thực thi tác vụ...');
-      final process = await Process.start(
-        exe,
-        args,
-        workingDirectory: workDir,
-        environment: env,
-        runInShell: false,
+      final allOutputs = StringBuffer();
+      String lastOutput = '';
+      String? status;
+      String? reason;
+      String? lastProcessError;
+      int failureChallenges = 0;
+
+      for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (isCancelled()) return;
+        String attemptPrompt = basePrompt;
+        if (attempt > 1) {
+          final directive = reason != null
+              ? 'Lần trước bạn kết luận thất bại với lý do: $reason. Trước khi kết luận lại, hãy thử ít nhất một phương án thay thế.'
+              : 'Lần chạy trước CHƯA xác nhận hoàn thành 100% (không có dòng MXH_TASK_STATUS: COMPLETED).';
+          attemptPrompt = '''$basePrompt
+
+=== KẾT QUẢ LẦN CHẠY TRƯỚC (lần ${attempt - 1}) ===
+${_tail(lastOutput, 4000)}
+
+=== CHỈ THỊ GIÁM SÁT HOÀN THÀNH ===
+$directive Kiểm tra trạng thái thực tế hiện tại, làm NỐT các bước còn thiếu (không lặp lại bước đã xong và đã kiểm chứng), rồi kết thúc bằng dòng MXH_TASK_STATUS.''';
+          final note = '\n\n---\n*Giám sát hoàn thành: lần chạy ${attempt - 1} chưa xác nhận xong, tự động chạy tiếp (lần $attempt/$maxAttempts)...*\n\n';
+          allOutputs.write(note);
+          onToken(note);
+          onStatus('Giám sát hoàn thành: buộc $cliName tiếp tục (lần $attempt/$maxAttempts)...');
+        }
+
+        final run = await _runCliProcessOnce(
+          exe: exe,
+          cliName: cliName,
+          prompt: attemptPrompt,
+          workDir: workDir,
+          env: env,
+          onToken: onToken,
+          onStatus: onStatus,
+          isCancelled: isCancelled,
+        );
+        if (isCancelled()) return;
+        lastOutput = run.output;
+        allOutputs.write(run.output);
+
+        final parsed = parseCliTaskStatus(run.output);
+        if (parsed.status != null) {
+          if (parsed.status == 'completed') {
+            status = 'completed';
+            reason = null;
+            break;
+          }
+          reason = parsed.reason;
+          if (failureChallenges >= 1 || attempt >= maxAttempts) {
+            status = 'failed';
+            break;
+          }
+          failureChallenges++;
+          continue;
+        }
+        if (run.exitCode != 0 && run.output.trim().isEmpty) {
+          lastProcessError = 'mã thoát ${run.exitCode}: ${run.stderr.isNotEmpty ? run.stderr : "không có phản hồi"}';
+        }
+      }
+
+      final cleaned = allOutputs
+          .toString()
+          .replaceAll(RegExp(r'^.*MXH_TASK_STATUS.*$', multiLine: true), '')
+          .trim();
+
+      String outcome;
+      String? failureReason;
+      if (status == 'completed') {
+        outcome = 'completed';
+      } else if (status == 'failed') {
+        outcome = 'failed';
+        failureReason = reason;
+      } else if (cleaned.isEmpty && lastProcessError != null) {
+        outcome = 'error';
+        failureReason = 'Agent $cliName báo lỗi ($lastProcessError)';
+      } else {
+        outcome = 'incomplete';
+        failureReason =
+            'CLI Agent $cliName đã chạy $maxAttempts lần nhưng không xác nhận hoàn thành 100%${reason != null ? ' (lý do gần nhất: $reason)' : ''}.';
+      }
+
+      final monitor = await _finalizeMonitoring(
+        outcome: outcome,
+        failureReason: failureReason,
+        userRequest: prompt,
+        sessionId: sessionId,
+        engine: cliName,
+        scopeKeys: scopeKeys,
+        extraSteps: lastOutput.trim().isEmpty ? const [] : ['Đầu ra cuối của CLI: ${_tail(lastOutput.trim(), 600)}'],
+        onStatus: onStatus,
       );
-
-      // Close stdin immediately so CLI doesn't wait for input
+      if (monitor.isNotEmpty) onToken(monitor);
+      final base = cleaned.isNotEmpty ? cleaned : 'Đã chạy tác vụ với $cliName.';
+      onDone('$base$monitor');
+    } catch (e) {
+      if (isCancelled()) return;
       try {
-        await process.stdin.close();
+        await TaskNotificationService().notifyTaskFailure(
+          userRequest: prompt,
+          reason: 'Không thể chạy CLI $cliName: $e',
+          outcome: 'error',
+          sessionId: sessionId,
+          engine: cliName,
+          personas: scopeKeys,
+        );
       } catch (_) {}
+      onError('Không thể chạy CLI $cliName: $e. Hãy kiểm tra đường dẫn hoặc quyền thực thi. Đã gửi cảnh báo cho chủ máy.');
+    }
+  }
 
-      final fullOutput = StringBuffer();
-      final errOutput = StringBuffer();
+  /// Chạy CLI Agent 1 lần, stream token ra giao diện và trả về toàn bộ đầu ra
+  Future<_CliRunResult> _runCliProcessOnce({
+    required String exe,
+    required String cliName,
+    required String prompt,
+    required String workDir,
+    required Map<String, String> env,
+    required void Function(String token) onToken,
+    required void Function(String status) onStatus,
+    required bool Function() isCancelled,
+  }) async {
+    List<String> args;
+    final m = cliName.toLowerCase();
+    if (m.contains('claude')) {
+      args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    } else if (m.contains('antigravity') || m == 'agy') {
+      args = ['--print', prompt, '--output-format', 'stream-json', '--dangerously-skip-permissions'];
+    } else if (m.contains('gemini')) {
+      args = ['-p', prompt];
+    } else {
+      args = ['-p', prompt, '--dangerously-skip-permissions'];
+    }
 
-      process.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
+    onStatus('AI Agent $cliName đang phân tích và thực thi tác vụ...');
+    final process = await Process.start(
+      exe,
+      args,
+      workingDirectory: workDir,
+      environment: env,
+      runInShell: false,
+    );
+
+    // Close stdin immediately so CLI doesn't wait for input
+    try {
+      await process.stdin.close();
+    } catch (_) {}
+
+    final fullOutput = StringBuffer();
+    final errOutput = StringBuffer();
+    final stdoutDone = Completer<void>();
+    final stderrDone = Completer<void>();
+
+    process.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
+      (line) {
         if (isCancelled()) return;
         final trimmed = line.trim();
         if (trimmed.isEmpty) return;
@@ -1558,7 +2290,6 @@ $prompt
                 final step = json['step_update'] as Map<String, dynamic>?;
                 final stepType = step?['step_type']?.toString();
                 final textDelta = step?['text_delta']?.toString();
-
                 if (textDelta != null && textDelta.isNotEmpty) {
                   fullOutput.write(textDelta);
                   onToken(textDelta);
@@ -1615,27 +2346,53 @@ $prompt
           // Not JSON -> handle as plain text stream
         }
 
-        // Plain text fallback line
         fullOutput.writeln(line);
         onToken('$line\n');
-      });
+      },
+      onDone: () {
+        if (!stdoutDone.isCompleted) stdoutDone.complete();
+      },
+      onError: (_) {
+        if (!stdoutDone.isCompleted) stdoutDone.complete();
+      },
+    );
 
-      process.stderr.transform(utf8.decoder).listen((data) {
-        if (!isCancelled()) {
-          errOutput.write(data);
-        }
-      });
+    process.stderr.transform(utf8.decoder).listen(
+      (data) {
+        if (!isCancelled()) errOutput.write(data);
+      },
+      onDone: () {
+        if (!stderrDone.isCompleted) stderrDone.complete();
+      },
+      onError: (_) {
+        if (!stderrDone.isCompleted) stderrDone.complete();
+      },
+    );
 
-      final exitCode = await process.exitCode;
-      if (exitCode == 0 || fullOutput.isNotEmpty) {
-        final result = fullOutput.toString().trim();
-        onDone(result.isNotEmpty ? result : 'Đã hoàn tất tác vụ với $cliName.');
-      } else {
-        final errStr = errOutput.toString().trim();
-        onError('Agent $cliName báo lỗi (mã $exitCode): ${errStr.isNotEmpty ? errStr : "Không có phản hồi"}');
-      }
-    } catch (e) {
-      onError('Không thể chạy CLI $cliName: $e. Hãy kiểm tra đường dẫn hoặc quyền thực thi.');
-    }
+    final exitCode = await process.exitCode;
+    try {
+      await Future.wait([stdoutDone.future, stderrDone.future]).timeout(const Duration(seconds: 5));
+    } catch (_) {}
+    return _CliRunResult(exitCode, fullOutput.toString(), errOutput.toString().trim());
   }
+}
+
+class _AiTurnResult {
+  final String content;
+  final Map<int, Map<String, dynamic>> toolCalls;
+  _AiTurnResult(this.content, this.toolCalls);
+}
+
+class _NonRetryableAiError implements Exception {
+  final String message;
+  _NonRetryableAiError(this.message);
+  @override
+  String toString() => message;
+}
+
+class _CliRunResult {
+  final int exitCode;
+  final String output;
+  final String stderr;
+  _CliRunResult(this.exitCode, this.output, this.stderr);
 }

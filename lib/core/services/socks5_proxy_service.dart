@@ -1932,6 +1932,14 @@ class Socks5ProxyService extends ChangeNotifier {
       } catch (_) {}
     }
 
+    // Xóa file cổng DevTools cũ để không đọc nhầm cổng của phiên trước
+    if (!useSystemProfile) {
+      try {
+        final staleDevTools = File(p.join(profileDir.path, 'DevToolsActivePort'));
+        if (staleDevTools.existsSync()) staleDevTools.deleteSync();
+      } catch (_) {}
+    }
+
     final isFirefox = executable.toLowerCase().contains('firefox');
     List<String> args;
     if (isFirefox) {
@@ -1970,6 +1978,9 @@ class Socks5ProxyService extends ChangeNotifier {
         if (useSystemProfile) '--profile-directory=$cleanProfileId',
         if (!useSystemProfile) '--user-data-dir=${profileDir.path}',
         if (loadedExtensions.isNotEmpty) '--load-extension=${loadedExtensions.join(',')}',
+        // Bật cổng DevTools ngẫu nhiên (chỉ lắng nghe 127.0.0.1) để AI Agent điều khiển trang: bấm, gõ, tải video lên.
+        // Chrome ghi cổng thực tế vào file DevToolsActivePort trong thư mục profile cô lập.
+        if (!useSystemProfile) '--remote-debugging-port=0',
         '--no-first-run',
         '--no-default-browser-check',
         '--ignore-certificate-errors',

@@ -9,6 +9,7 @@ import '../../core/services/local_config_service.dart';
 import '../../core/services/native_ssh_service.dart';
 import '../../core/services/persona_service.dart';
 import '../../core/services/socks5_proxy_service.dart';
+import '../../core/services/task_notification_service.dart';
 import '../../core/services/windows_hypervisor_service.dart';
 import '../../core/services/windows_ldplayer_bridge_service.dart';
 import '../../core/theme/app_theme.dart';
@@ -53,6 +54,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   LdPlayerBridgeStatus? _ldBridgeStatus;
   bool _isCheckingLdBridge = false;
   bool _isActivatingLdPlayer = false;
+
+  // Giám sát hoàn thành & kênh cảnh báo khi tác vụ không hoàn thành
+  final TextEditingController _maxTurnsCtrl = TextEditingController(text: '80');
+  final TextEditingController _maxNudgesCtrl = TextEditingController(text: '6');
+  final TextEditingController _cliAttemptsCtrl = TextEditingController(text: '3');
+  final TextEditingController _webhookUrlCtrl = TextEditingController();
+  final TextEditingController _webhookSecretCtrl = TextEditingController();
+  final TextEditingController _tgTokenCtrl = TextEditingController();
+  final TextEditingController _tgChatCtrl = TextEditingController();
+  final TextEditingController _emailToCtrl = TextEditingController();
+  final TextEditingController _smtpHostCtrl = TextEditingController();
+  final TextEditingController _smtpPortCtrl = TextEditingController(text: '465');
+  final TextEditingController _smtpUserCtrl = TextEditingController();
+  final TextEditingController _smtpPassCtrl = TextEditingController();
+  bool _smtpSsl = true;
+  bool _isTestingNotify = false;
 
   @override
   void initState() {
@@ -341,6 +358,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlCtrl.dispose();
     _apiKeyCtrl.dispose();
     _maxDevicesCtrl.dispose();
+    for (final c in [
+      _maxTurnsCtrl, _maxNudgesCtrl, _cliAttemptsCtrl, _webhookUrlCtrl, _webhookSecretCtrl, _tgTokenCtrl,
+      _tgChatCtrl, _emailToCtrl, _smtpHostCtrl, _smtpPortCtrl, _smtpUserCtrl, _smtpPassCtrl,
+    ]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -368,6 +391,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadGlobalConfig() async {
     try {
       final cfg = await _api.getConfig();
+      String cv(String k) => (cfg[k] ?? '').toString();
+      if (cv('agent_max_turns').isNotEmpty) _maxTurnsCtrl.text = cv('agent_max_turns');
+      if (cv('agent_max_continue_nudges').isNotEmpty) _maxNudgesCtrl.text = cv('agent_max_continue_nudges');
+      if (cv('agent_cli_max_attempts').isNotEmpty) _cliAttemptsCtrl.text = cv('agent_cli_max_attempts');
+      _webhookUrlCtrl.text = cv('notify_webhook_url');
+      _webhookSecretCtrl.text = cv('notify_webhook_secret');
+      _tgTokenCtrl.text = cv('notify_telegram_bot_token');
+      _tgChatCtrl.text = cv('notify_telegram_chat_id');
+      _emailToCtrl.text = cv('notify_email_to');
+      _smtpHostCtrl.text = cv('notify_smtp_host');
+      if (cv('notify_smtp_port').isNotEmpty) _smtpPortCtrl.text = cv('notify_smtp_port');
+      _smtpUserCtrl.text = cv('notify_smtp_user');
+      _smtpPassCtrl.text = cv('notify_smtp_pass');
+      _smtpSsl = cv('notify_smtp_ssl').isEmpty ? true : (cv('notify_smtp_ssl') == 'true' || cv('notify_smtp_ssl') == '1');
       final aiModel = cfg['ai_model']?.toString() ?? '';
       if (aiModel.isNotEmpty) {
         _modelCtrl.text = aiModel;
@@ -1914,9 +1951,212 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 24),
+
+                  // GROUP 6: COMPLETION GUARD & FAILURE NOTIFICATIONS
+                  _buildNotificationSettingsCard(),
                 ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveNotifySettings({bool silent = false}) async {
+    final maxTurns = int.tryParse(_maxTurnsCtrl.text.trim());
+    final maxNudges = int.tryParse(_maxNudgesCtrl.text.trim());
+    final cliAttempts = int.tryParse(_cliAttemptsCtrl.text.trim());
+    if (maxTurns == null || maxTurns < 10 || maxNudges == null || maxNudges < 1 || cliAttempts == null || cliAttempts < 1) {
+      AppToast.warning(context, 'Số bước tối đa phải từ 10, số lần buộc tiếp tục và số lần chạy lại CLI phải từ 1 trở lên.');
+      return;
+    }
+    final webhook = _webhookUrlCtrl.text.trim();
+    if (webhook.isNotEmpty && !(webhook.startsWith('http://') || webhook.startsWith('https://'))) {
+      AppToast.warning(context, 'Webhook URL phải bắt đầu bằng http:// hoặc https://');
+      return;
+    }
+    try {
+      final cfg = await _api.getConfig();
+      cfg['agent_max_turns'] = maxTurns;
+      cfg['agent_max_continue_nudges'] = maxNudges;
+      cfg['agent_cli_max_attempts'] = cliAttempts;
+      cfg['notify_webhook_url'] = webhook;
+      cfg['notify_webhook_secret'] = _webhookSecretCtrl.text.trim();
+      cfg['notify_telegram_bot_token'] = _tgTokenCtrl.text.trim();
+      cfg['notify_telegram_chat_id'] = _tgChatCtrl.text.trim();
+      cfg['notify_email_to'] = _emailToCtrl.text.trim();
+      cfg['notify_smtp_host'] = _smtpHostCtrl.text.trim();
+      cfg['notify_smtp_port'] = _smtpPortCtrl.text.trim();
+      cfg['notify_smtp_user'] = _smtpUserCtrl.text.trim();
+      cfg['notify_smtp_pass'] = _smtpPassCtrl.text.trim();
+      cfg['notify_smtp_ssl'] = _smtpSsl;
+      final ok = await _api.saveConfig(cfg);
+      if (!mounted || silent) return;
+      if (ok) {
+        AppToast.success(context, 'Đã lưu cấu hình giám sát hoàn thành và kênh cảnh báo!');
+      } else {
+        AppToast.error(context, 'Lưu cấu hình cảnh báo thất bại!');
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Lỗi: $e');
+    }
+  }
+
+  Future<void> _testNotifyChannels() async {
+    setState(() => _isTestingNotify = true);
+    try {
+      await _saveNotifySettings(silent: true);
+      final res = await TaskNotificationService().sendTest();
+      if (!mounted) return;
+      if (res.anyRemoteDelivered && res.errors.isEmpty) {
+        AppToast.success(context, res.describe());
+      } else if (res.anyRemoteDelivered) {
+        AppToast.warning(context, res.describe());
+      } else {
+        AppToast.error(context, res.describe());
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Lỗi gửi thử: $e');
+    } finally {
+      if (mounted) setState(() => _isTestingNotify = false);
+    }
+  }
+
+  Widget _notifyField(String label, TextEditingController ctrl, {String? hint, bool obscure = false, TextInputType? keyboard}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textDim)),
+        const SizedBox(height: 6),
+        TextField(
+          controller: ctrl,
+          obscureText: obscure,
+          keyboardType: keyboard,
+          decoration: InputDecoration(hintText: hint, isDense: true),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNotificationSettingsCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.borderDark),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Row(
+                  children: [
+                    Icon(Icons.notifications_active_rounded, size: 18, color: AppColors.warning),
+                    SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        '6. Giám Sát Hoàn Thành 100% & Cảnh Báo Khi Tác Vụ Thất Bại',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _isTestingNotify ? null : _testNotifyChannels,
+                icon: _isTestingNotify
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.6))
+                    : const Icon(Icons.send_rounded, size: 14),
+                label: const Text('Gửi thử', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.cardBg,
+                  side: const BorderSide(color: AppColors.warning),
+                ),
+                icon: const Icon(Icons.check_rounded, size: 16, color: AppColors.warning),
+                label: const Text('Lưu Cấu Hình Cảnh Báo', style: TextStyle(color: AppColors.warning)),
+                onPressed: () => _saveNotifySettings(),
+              ),
+            ],
+          ),
+          const Divider(height: 20),
+          const Text(
+            'AI Agent chỉ được dừng khi đã kiểm chứng hoàn thành 100% yêu cầu. Nếu Agent dừng giữa chừng, hệ thống tự buộc làm tiếp; '
+            'khi hết số lần cho phép hoặc Agent xác nhận không thể hoàn thành, cảnh báo sẽ được gửi qua các kênh bên dưới '
+            '(luôn ghi kèm nhật ký ~/.agent_mxh_auto/task_failures.log).',
+            style: TextStyle(fontSize: 11, color: AppColors.textMuted, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(child: _notifyField('Số bước tối đa mỗi yêu cầu', _maxTurnsCtrl, hint: '80', keyboard: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _notifyField('Số lần buộc Agent làm tiếp', _maxNudgesCtrl, hint: '6', keyboard: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _notifyField('Số lần chạy lại CLI Agent', _cliAttemptsCtrl, hint: '3', keyboard: TextInputType.number)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text('Webhook máy chủ (POST JSON)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(flex: 3, child: _notifyField('Webhook URL', _webhookUrlCtrl, hint: 'https://may-chu-cua-ban/api/mxh-alert')),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: _notifyField('Secret (Bearer, tùy chọn)', _webhookSecretCtrl, obscure: true)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text('Tin nhắn Telegram', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(flex: 3, child: _notifyField('Bot Token', _tgTokenCtrl, hint: '123456:ABC-DEF...', obscure: true)),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: _notifyField('Chat ID', _tgChatCtrl, hint: '123456789')),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text('Email (SMTP)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(flex: 3, child: _notifyField('Email nhận cảnh báo (nhiều email cách nhau dấu phẩy)', _emailToCtrl, hint: 'ban@gmail.com')),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: _notifyField('SMTP Host', _smtpHostCtrl, hint: 'smtp.gmail.com')),
+              const SizedBox(width: 12),
+              Expanded(flex: 1, child: _notifyField('Cổng', _smtpPortCtrl, hint: '465', keyboard: TextInputType.number)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _notifyField('Tài khoản SMTP', _smtpUserCtrl, hint: 'ban@gmail.com')),
+              const SizedBox(width: 12),
+              Expanded(child: _notifyField('Mật khẩu ứng dụng SMTP', _smtpPassCtrl, obscure: true)),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('SSL (cổng 465)', style: TextStyle(fontSize: 11, color: AppColors.textDim)),
+                  SizedBox(
+                    height: 36,
+                    child: Switch(
+                      value: _smtpSsl,
+                      onChanged: (v) => setState(() => _smtpSsl = v),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ],
       ),
