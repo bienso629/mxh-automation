@@ -84,8 +84,27 @@ class AuthGate extends StatefulWidget {
   State<AuthGate> createState() => _AuthGateState();
 }
 
-class _AuthGateState extends State<AuthGate> {
+class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   String? _lastTrackedUserKey;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      context.read<AuthProvider>().verifyLiveGroupMembership();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -105,10 +124,15 @@ class _AuthGateState extends State<AuthGate> {
       final serverProv = context.read<ServerProvider>();
       final chatProv = context.read<ChatProvider>();
       final schedProv = context.read<ScheduleProvider>();
+      final wasAuthenticated = _lastTrackedUserKey!.isNotEmpty;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         serverProv.resetForUserSwitch();
         chatProv.resetForUserSwitch();
         schedProv.resetForUserSwitch();
+        if (wasAuthenticated && currentKey.isEmpty && mounted) {
+          // Đóng mọi hộp thoại đang mở để người dùng thấy ngay màn hình đăng nhập và thông báo bị đăng xuất
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        }
         if (currentKey.isNotEmpty) {
           serverProv.loadServers();
           chatProv.initChat();

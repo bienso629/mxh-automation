@@ -2,7 +2,24 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'crypto_helper.dart';
 
+class LiveGroupCheckResult {
+  /// true khi máy chủ phản hồi xác thực rõ ràng trạng thái thành viên nhóm.
+  /// false khi mất mạng / lỗi máy chủ / phiên chưa đủ quyền (không được đăng xuất nhầm).
+  final bool verified;
+  final List<String> groups;
+  final String? source;
+
+  const LiveGroupCheckResult({
+    required this.verified,
+    this.groups = const [],
+    this.source,
+  });
+}
+
 class ForumAuthService {
+  static const String _chromeUserAgent =
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
   static const Map<String, String> apiEndpoints = {
     'local': 'http://localhost:1122/v1',
     'vn.s1': 'https://apiv1.type.vn/v1',
@@ -260,6 +277,7 @@ class ForumAuthService {
               'reputation': u['reputation'] ?? 0,
               'status': u['status'] ?? 'online',
               'groups': userGroups,
+              if (sessionCookie.isNotEmpty) '_session_cookie': sessionCookie,
             },
           },
         },
@@ -287,6 +305,7 @@ class ForumAuthService {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'User-Agent': _chromeUserAgent,
         },
         body: jsonEncode({'params': encryptedParams}),
       ).timeout(const Duration(seconds: 12));
@@ -303,39 +322,205 @@ class ForumAuthService {
     }
   }
 
-  /// Lấy danh sách nhóm của user trực tiếp từ https://type.vn/api/user/:slug/groups
-  Future<List<String>> fetchUserGroupsByUsername(String username) async {
+  static bool _isTargetActorGroup(String slugOrName) {
+    final g = slugOrName.toLowerCase().trim();
+    final normalized = g
+        .replaceAll('đ', 'd')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-')
+        .replaceAll('_', '-')
+        .replaceAll(' ', '-');
+    return g == 'nhóm-diễn-viên-mxh' ||
+        g == 'nhom-dien-vien-mxh' ||
+        g == 'nhóm diễn viên mxh' ||
+        g == 'nhom dien vien mxh' ||
+        normalized == 'nhom-dien-vien-mxh' ||
+        (normalized.contains('nhom') && normalized.contains('dien-vien') && normalized.contains('mxh')) ||
+        normalized.contains('dien-vien-mxh') ||
+        (normalized.contains('dien-vien') && normalized.contains('mxh'));
+  }
+
+  /// Trích xuất danh sách nhóm của user từ phản hồi `/forum/groups`.
+  /// Đánh dấu `verified: true` nếu tìm thấy user trong nhóm mục tiêu/quản trị, HOẶC danh sách thành viên của
+  /// nhóm `nhóm-diễn-viên-mxh` đầy đủ (`members.length >= memberCount`) và không chứa user.
+  static LiveGroupCheckResult extractLiveGroupResultFromForumGroups({
+    required Map<String, dynamic>? groupsRes,
+    String? uid,
+    String? username,
+    String? email,
+  }) {
+    if (groupsRes == null || groupsRes['success'] != true || groupsRes['data'] is! Map) {
+      return const LiveGroupCheckResult(verified: false);
+    }
+    final dataMap = groupsRes['data'] as Map;
+    if (dataMap['groups'] is! List) {
+      return const LiveGroupCheckResult(verified: false);
+    }
+
+    final groupsList = dataMap['groups'] as List;
+    final cleanUid = uid?.trim() ?? '';
+    final cleanUser = username?.trim().toLowerCase() ?? '';
+    final cleanSlug = cleanUser.replaceAll(' ', '-');
+    final emailPrefix = (email != null && email.contains('@'))
+        ? email.split('@').first.trim().toLowerCase()
+        : '';
+
+    if (cleanUid.isEmpty && cleanUser.isEmpty && emailPrefix.isEmpty) {
+      return const LiveGroupCheckResult(verified: false);
+    }
+
+    final matchedGroups = <String>[];
+    bool actorGroupFoundInPayload = false;
+    bool actorGroupMembersComplete = false;
+    bool userInActorGroup = false;
+
+    for (final rawGroup in groupsList) {
+      if (rawGroup is! Map) continue;
+      final slug = rawGroup['slug']?.toString().trim() ?? '';
+      final name = rawGroup['name']?.toString().trim() ?? '';
+      final displayName = rawGroup['displayName']?.toString().trim() ?? '';
+      final members = rawGroup['members'] is List ? rawGroup['members'] as List : const [];
+      final memberCount = int.tryParse(rawGroup['memberCount']?.toString() ?? '') ?? members.length;
+
+      final isActorGrp = _isTargetActorGroup(slug) ||
+          _isTargetActorGroup(name) ||
+          _isTargetActorGroup(displayName);
+      if (isActorGrp) {
+        actorGroupFoundInPayload = true;
+        if (members.length >= memberCount) {
+          actorGroupMembersComplete = true;
+        }
+      }
+
+      bool isMember = false;
+      for (final rawMember in members) {
+        if (rawMember is! Map) continue;
+        final mUid = rawMember['uid']?.toString().trim() ?? '';
+        final mUsername = rawMember['username']?.toString().trim().toLowerCase() ?? '';
+        final mSlug = rawMember['userslug']?.toString().trim().toLowerCase() ?? '';
+        final mDisplay = rawMember['displayname']?.toString().trim().toLowerCase() ?? '';
+
+        if ((cleanUid.isNotEmpty && mUid == cleanUid) ||
+            (cleanUser.isNotEmpty && (mUsername == cleanUser || mDisplay == cleanUser || mSlug == cleanSlug)) ||
+            (emailPrefix.isNotEmpty && (mUsername == emailPrefix || mSlug == emailPrefix))) {
+          isMember = true;
+          break;
+        }
+      }
+
+      if (isMember) {
+        if (slug.isNotEmpty && !matchedGroups.contains(slug)) matchedGroups.add(slug);
+        if (name.isNotEmpty && !matchedGroups.contains(name)) matchedGroups.add(name);
+        if (displayName.isNotEmpty && !matchedGroups.contains(displayName)) matchedGroups.add(displayName);
+        if (isActorGrp) {
+          userInActorGroup = true;
+        }
+      }
+    }
+
+    if (userInActorGroup) {
+      return LiveGroupCheckResult(verified: true, groups: matchedGroups, source: 'forum_groups');
+    }
+
+    // Nếu nhóm `nhóm-diễn-viên-mxh` có mặt đầy đủ danh sách thành viên (không bị phân trang cắt bớt)
+    // mà tài khoản không còn trong đó -> xác thực chắc chắn đã bị gỡ khỏi nhóm.
+    if (actorGroupFoundInPayload && actorGroupMembersComplete) {
+      return LiveGroupCheckResult(verified: true, groups: matchedGroups, source: 'forum_groups');
+    }
+
+    return const LiveGroupCheckResult(verified: false);
+  }
+
+  /// Lấy danh sách nhóm của user trực tiếp từ https://type.vn/api/user/:slug/groups (có thể kèm session cookie)
+  Future<LiveGroupCheckResult> fetchUserGroupsLiveByUsername(
+    String username, {
+    String? sessionCookie,
+  }) async {
     final groups = <String>[];
-    if (username.isEmpty) return groups;
+    if (username.trim().isEmpty) {
+      return const LiveGroupCheckResult(verified: false);
+    }
     try {
       final userSlug = username.trim().toLowerCase().replaceAll(' ', '-');
       final res = await _client.get(
         Uri.parse('https://type.vn/api/user/${Uri.encodeComponent(userSlug)}/groups'),
         headers: {
           'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          if (sessionCookie != null && sessionCookie.trim().isNotEmpty) 'Cookie': sessionCookie.trim(),
+          'User-Agent': _chromeUserAgent,
         },
       ).timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final gData = jsonDecode(utf8.decode(res.bodyBytes));
-        if (gData is Map && gData['groups'] is List) {
-          for (final grp in gData['groups']) {
-            if (grp is Map) {
-              final slug = grp['slug']?.toString().trim() ?? '';
-              final name = grp['name']?.toString().trim() ?? '';
-              final displayName = grp['displayName']?.toString().trim() ?? '';
-              if (slug.isNotEmpty && !groups.contains(slug)) groups.add(slug);
-              if (name.isNotEmpty && !groups.contains(name)) groups.add(name);
-              if (displayName.isNotEmpty && !groups.contains(displayName)) groups.add(displayName);
-            } else if (grp != null) {
-              final str = grp.toString().trim();
-              if (str.isNotEmpty && !groups.contains(str)) groups.add(str);
+        if (gData is Map) {
+          final statusCodeStr = (gData['status'] is Map) ? gData['status']['code']?.toString() : null;
+          if (statusCodeStr == 'not-authorised' || statusCodeStr == 'forbidden') {
+            return const LiveGroupCheckResult(verified: false);
+          }
+          if (gData['groups'] is List) {
+            for (final grp in gData['groups']) {
+              if (grp is Map) {
+                final slug = grp['slug']?.toString().trim() ?? '';
+                final name = grp['name']?.toString().trim() ?? '';
+                final displayName = grp['displayName']?.toString().trim() ?? '';
+                if (slug.isNotEmpty && !groups.contains(slug)) groups.add(slug);
+                if (name.isNotEmpty && !groups.contains(name)) groups.add(name);
+                if (displayName.isNotEmpty && !groups.contains(displayName)) groups.add(displayName);
+              } else if (grp != null) {
+                final str = grp.toString().trim();
+                if (str.isNotEmpty && !groups.contains(str)) groups.add(str);
+              }
             }
+            return LiveGroupCheckResult(verified: true, groups: groups, source: 'type_vn_user_groups');
           }
         }
       }
     } catch (_) {}
-    return groups;
+    return const LiveGroupCheckResult(verified: false);
+  }
+
+  /// Lấy danh sách nhóm của user trực tiếp từ https://type.vn/api/user/:slug/groups
+  Future<List<String>> fetchUserGroupsByUsername(String username, {String? sessionCookie}) async {
+    final res = await fetchUserGroupsLiveByUsername(username, sessionCookie: sessionCookie);
+    return res.groups;
+  }
+
+  /// Kiểm tra trực tuyến danh sách nhóm hiện tại của tài khoản trên diễn đàn type.vn.
+  /// Ưu tiên `/forum/groups` (hoạt động không cần cookie), fallback sang `vn.s3` và `type.vn/api/user/:slug/groups` nếu cần.
+  Future<LiveGroupCheckResult> verifyUserGroupsLive({
+    String? uid,
+    String? username,
+    String? email,
+    String server = 'vn.s3',
+    String? sessionCookie,
+  }) async {
+    final serversToTry = <String>[
+      if (server.trim().isNotEmpty) server.trim(),
+      if (server.trim() != 'vn.s3') 'vn.s3',
+    ];
+
+    for (final srv in serversToTry) {
+      final groupsRes = await getGroups(srv);
+      final parsed = extractLiveGroupResultFromForumGroups(
+        groupsRes: groupsRes,
+        uid: uid,
+        username: username,
+        email: email,
+      );
+      if (parsed.verified) {
+        return parsed;
+      }
+    }
+
+    // Dự phòng bằng phiên cookie trực tiếp trên type.vn (hữu ích khi nhóm có nhiều thành viên bị phân trang)
+    if (sessionCookie != null && sessionCookie.trim().isNotEmpty && username != null && username.trim().isNotEmpty) {
+      final direct = await fetchUserGroupsLiveByUsername(username, sessionCookie: sessionCookie);
+      if (direct.verified) {
+        return direct;
+      }
+    }
+
+    return const LiveGroupCheckResult(verified: false);
   }
 }

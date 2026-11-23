@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../core/services/crypto_helper.dart';
@@ -8,6 +9,14 @@ import '../core/services/multi_account_service.dart';
 import '../core/services/persona_service.dart';
 import '../core/services/storage_service.dart';
 
+typedef LiveGroupChecker = Future<LiveGroupCheckResult> Function({
+  String? uid,
+  String? username,
+  String? email,
+  required String server,
+  String? sessionCookie,
+});
+
 class AuthProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
   final DatabaseService _db = DatabaseService();
@@ -16,22 +25,32 @@ class AuthProvider extends ChangeNotifier {
   final MultiAccountService _multiAccount = MultiAccountService();
   final ForumAuthService _forumAuth = ForumAuthService();
 
+  /// Hook tùy chọn phục vụ kiểm thử đơn vị mà không cần gọi mạng thật tới type.vn
+  LiveGroupChecker? liveGroupCheckerOverride;
+  Duration groupCheckInterval = const Duration(seconds: 60);
+  final bool _enablePeriodicCheck;
+
   bool _isLoading = false;
   bool _isCheckingAuth = true;
   bool _isAuthenticated = false;
+  bool _isVerifyingLiveGroups = false;
+  String? _userUid;
   String? _userEmail;
   String? _userName;
   String? _authToken;
+  String? _forumSessionCookie;
   String? _avatar;
   String? _selectedServer = 'vn.s3';
   String? _errorMessage;
   String _activeUserKey = '';
   List<AccountProfile> _accounts = [];
   List<String> _userGroups = [];
+  Timer? _groupMonitorTimer;
 
   bool get isLoading => _isLoading;
   bool get isCheckingAuth => _isCheckingAuth;
   bool get isAuthenticated => _isAuthenticated;
+  String? get userUid => _userUid;
   String? get userEmail => _userEmail;
   String? get userName => _userName;
   String? get authToken => _authToken;
@@ -148,8 +167,161 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  AuthProvider() {
-    checkAuthStatus();
+  AuthProvider({
+    bool autoCheck = true,
+    bool enablePeriodicCheck = true,
+  }) : _enablePeriodicCheck = enablePeriodicCheck {
+    if (autoCheck) {
+      checkAuthStatus();
+    } else {
+      _isCheckingAuth = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _stopGroupMembershipMonitor();
+    super.dispose();
+  }
+
+  void _startGroupMembershipMonitor() {
+    _stopGroupMembershipMonitor();
+    if (!_enablePeriodicCheck || !_isAuthenticated) return;
+    if (_authToken == 'native_local_token') return;
+    _groupMonitorTimer = Timer.periodic(groupCheckInterval, (_) {
+      unawaited(verifyLiveGroupMembership());
+    });
+  }
+
+  void _stopGroupMembershipMonitor() {
+    _groupMonitorTimer?.cancel();
+    _groupMonitorTimer = null;
+  }
+
+  Future<LiveGroupCheckResult> _checkLiveGroups({
+    String? uid,
+    String? username,
+    String? email,
+    String? server,
+    String? sessionCookie,
+  }) async {
+    final effectiveServer = (server != null && server.trim().isNotEmpty) ? server.trim() : selectedServer;
+    if (liveGroupCheckerOverride != null) {
+      return liveGroupCheckerOverride!(
+        uid: uid,
+        username: username,
+        email: email,
+        server: effectiveServer,
+        sessionCookie: sessionCookie,
+      );
+    }
+    return _forumAuth.verifyUserGroupsLive(
+      uid: uid,
+      username: username,
+      email: email,
+      server: effectiveServer,
+      sessionCookie: sessionCookie,
+    );
+  }
+
+  Future<void> _forceLogoutDueToGroupRemoval({
+    required String message,
+    List<String>? latestGroups,
+    String? targetUid,
+    String? targetEmail,
+    String? targetUsername,
+  }) async {
+    _stopGroupMembershipMonitor();
+    if (latestGroups != null) {
+      try {
+        await _multiAccount.updateAccountGroups(
+          uid: targetUid ?? _userUid,
+          email: targetEmail ?? _userEmail,
+          username: targetUsername ?? _userName,
+          groups: latestGroups,
+        );
+      } catch (_) {}
+    }
+
+    await _storage.clearAuth();
+    _isAuthenticated = false;
+    _authToken = null;
+    _forumSessionCookie = null;
+    _userUid = null;
+    _userEmail = null;
+    _userName = null;
+    _avatar = null;
+    _userGroups = [];
+    _activeUserKey = '';
+    _errorMessage = message;
+    await _db.closeForLogout();
+    await _localConfig.clearForLogout();
+    _persona.switchUser('');
+    await refreshAccountsList(notify: false);
+    notifyListeners();
+  }
+
+  /// Kiểm tra trực tuyến tư cách thành viên nhóm "nhóm-diễn-viên-mxh" cho tài khoản đang đăng nhập.
+  /// Nếu máy chủ xác thực tài khoản đã bị gỡ khỏi nhóm -> tự động đăng xuất ngay lập tức.
+  /// Nếu lỗi mạng tạm thời (`verified: false`) -> giữ nguyên phiên để tránh đăng xuất nhầm.
+  Future<bool> verifyLiveGroupMembership() async {
+    if (!_isAuthenticated || _isVerifyingLiveGroups) return _isAuthenticated;
+    if (_authToken == 'native_local_token') return true;
+    // Tài khoản admin hệ thống không bị phụ thuộc nhóm thường
+    if (checkActorAccess(email: _userEmail, name: _userName, groups: const [])) {
+      return true;
+    }
+
+    _isVerifyingLiveGroups = true;
+    try {
+      final liveRes = await _checkLiveGroups(
+        uid: _userUid,
+        username: _userName,
+        email: _userEmail,
+        server: _selectedServer,
+        sessionCookie: _forumSessionCookie,
+      );
+      if (!liveRes.verified || !_isAuthenticated) {
+        return _isAuthenticated;
+      }
+
+      final stillHasAccess = checkActorAccess(
+        email: _userEmail,
+        name: _userName,
+        groups: liveRes.groups,
+      );
+
+      if (!stillHasAccess) {
+        await _forceLogoutDueToGroupRemoval(
+          message:
+              'Tài khoản của bạn đã bị gỡ khỏi nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn và đã được tự động đăng xuất.',
+          latestGroups: liveRes.groups,
+        );
+        return false;
+      }
+
+      // Cập nhật lại danh sách nhóm mới nhất khi vẫn còn quyền
+      final changed = _userGroups.length != liveRes.groups.length ||
+          !_userGroups.toSet().containsAll(liveRes.groups);
+      _userGroups = List<String>.from(liveRes.groups);
+      try {
+        await _multiAccount.updateAccountGroups(
+          uid: _userUid,
+          email: _userEmail,
+          username: _userName,
+          groups: _userGroups,
+        );
+      } catch (_) {}
+      if (changed) {
+        await refreshAccountsList(notify: false);
+        notifyListeners();
+      }
+      return true;
+    } catch (_) {
+      return _isAuthenticated;
+    } finally {
+      _isVerifyingLiveGroups = false;
+    }
   }
 
   Future<void> refreshAccountsList({bool notify = true}) async {
@@ -270,9 +442,15 @@ class AuthProvider extends ChangeNotifier {
         _userName = await _storage.getUserName();
         _avatar = await _storage.getUserAvatar();
         _authToken = await _storage.getAuthToken();
+        _userUid = await _storage.getUserUid();
+        _forumSessionCookie = await _storage.getForumSessionCookie();
+        final storedServer = await _storage.getAuthServer();
+        if (storedServer != null && storedServer.isNotEmpty) {
+          _selectedServer = storedServer;
+        }
         _userGroups = [];
 
-        // Luôn khôi phục groups (và avatar nếu thiếu) từ JWT token, kể cả khi đã có avatar
+        // Luôn khôi phục groups, uid, server (và avatar nếu thiếu) từ JWT token, kể cả khi đã có avatar
         if (_authToken != null && _authToken!.contains('.')) {
           try {
             final parts = _authToken!.split('.');
@@ -291,6 +469,16 @@ class AuthProvider extends ChangeNotifier {
                     await _storage.setUserAvatar(_avatar);
                   }
                 }
+                if ((_userUid == null || _userUid!.isEmpty) && userObj['id'] != null) {
+                  final tokenUid = userObj['id'].toString().trim();
+                  if (tokenUid.isNotEmpty && tokenUid != 'null') {
+                    _userUid = tokenUid;
+                    await _storage.setUserUid(_userUid);
+                  }
+                }
+                if (userObj['server'] != null && userObj['server'].toString().trim().isNotEmpty) {
+                  _selectedServer = userObj['server'].toString().trim();
+                }
                 if (userObj['groups'] is List) {
                   _userGroups = (userObj['groups'] as List).map((e) => e.toString()).toList();
                 }
@@ -299,42 +487,86 @@ class AuthProvider extends ChangeNotifier {
           } catch (_) {}
         }
 
-        // Dự phòng khôi phục groups từ MultiAccountService nếu JWT không có
-        if (_userGroups.isEmpty) {
-          final matchedAcc = await _multiAccount.findMatchingAccount(
-            email: _userEmail,
-            username: _userName,
-          );
-          if (matchedAcc != null && matchedAcc.groups.isNotEmpty) {
+        // Dự phòng khôi phục groups và uid từ MultiAccountService nếu JWT không có
+        final matchedAcc = await _multiAccount.findMatchingAccount(
+          uid: _userUid,
+          email: _userEmail,
+          username: _userName,
+        );
+        if (matchedAcc != null) {
+          if (_userGroups.isEmpty && matchedAcc.groups.isNotEmpty) {
             _userGroups = List<String>.from(matchedAcc.groups);
+          }
+          if ((_userUid == null || _userUid!.isEmpty) && matchedAcc.uid != null && matchedAcc.uid!.isNotEmpty) {
+            _userUid = matchedAcc.uid;
+          }
+          if (matchedAcc.server != null && matchedAcc.server!.isNotEmpty) {
+            _selectedServer = matchedAcc.server;
+          }
+        }
+
+        // Xác thực trực tuyến tư cách thành viên nhóm "nhóm-diễn-viên-mxh" ngay khi mở lại app
+        // (nếu bị gỡ khỏi nhóm trong lúc tắt app sẽ đăng xuất ngay, không tin mù JWT cũ)
+        bool kickedByServer = false;
+        if (_authToken != 'native_local_token' &&
+            !checkActorAccess(email: _userEmail, name: _userName, groups: const [])) {
+          final liveRes = await _checkLiveGroups(
+            uid: _userUid,
+            username: _userName,
+            email: _userEmail,
+            server: _selectedServer,
+            sessionCookie: _forumSessionCookie,
+          );
+          if (liveRes.verified) {
+            _userGroups = List<String>.from(liveRes.groups);
+            try {
+              await _multiAccount.updateAccountGroups(
+                uid: _userUid,
+                email: _userEmail,
+                username: _userName,
+                groups: _userGroups,
+              );
+            } catch (_) {}
+            if (!checkActorAccess(email: _userEmail, name: _userName, groups: _userGroups)) {
+              kickedByServer = true;
+            }
           }
         }
 
         // Kiểm tra quyền nhóm của phiên lưu trữ
-        final hasAccess = checkActorAccess(
-          email: _userEmail,
-          name: _userName,
-          groups: _userGroups,
-        );
+        final hasAccess = !kickedByServer &&
+            checkActorAccess(
+              email: _userEmail,
+              name: _userName,
+              groups: _userGroups,
+            );
 
         if (!hasAccess) {
-          // Nếu phiên cũ không còn thuộc nhóm diễn viên MXH, xoá phiên
+          // Nếu phiên cũ không còn thuộc nhóm diễn viên MXH, xoá phiên ngay lập tức
+          _stopGroupMembershipMonitor();
           await _storage.clearAuth();
           _isAuthenticated = false;
+          _userUid = null;
           _userEmail = null;
           _userName = null;
           _authToken = null;
+          _forumSessionCookie = null;
+          _avatar = null;
           _userGroups = [];
           _activeUserKey = '';
           await _db.closeForLogout();
           await _localConfig.clearForLogout();
           _persona.switchUser('');
-          _errorMessage = 'Tài khoản chưa tham gia nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
+          await refreshAccountsList(notify: false);
+          _errorMessage = kickedByServer
+              ? 'Tài khoản của bạn đã bị gỡ khỏi nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn và đã được tự động đăng xuất.'
+              : 'Tài khoản chưa tham gia nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
         } else {
           final storedKey = await _storage.getStoredUserKey();
           final userKey = (storedKey != null && storedKey.trim().isNotEmpty)
               ? storedKey.trim()
               : await _resolveCanonicalUserKey(
+                  uid: _userUid,
                   username: _userName,
                   respEmail: _userEmail,
                   typedInput: _userEmail ?? _userName ?? '',
@@ -344,6 +576,7 @@ class AuthProvider extends ChangeNotifier {
           await _localConfig.switchUser(userKey);
           _persona.switchUser(userKey);
           _activeUserKey = userKey;
+          _startGroupMembershipMonitor();
         }
       } else {
         _isAuthenticated = false;
@@ -429,9 +662,14 @@ class AuthProvider extends ChangeNotifier {
               : <String>[],
         };
 
+        final loginSessionCookie = resp['_session_cookie']?.toString().trim();
+
         // Đảm bảo lấy đầy đủ danh sách nhóm của user trực tiếp từ type.vn
         try {
-          final extraGroups = await _forumAuth.fetchUserGroupsByUsername(user['name']?.toString() ?? cleanEmail);
+          final extraGroups = await _forumAuth.fetchUserGroupsByUsername(
+            user['name']?.toString() ?? cleanEmail,
+            sessionCookie: loginSessionCookie,
+          );
           final list = user['groups'] as List<String>;
           for (final eg in extraGroups) {
             if (!list.contains(eg)) {
@@ -515,6 +753,9 @@ class AuthProvider extends ChangeNotifier {
         await _storage.setUserName(respUsername);
         await _storage.setUserAvatar(avatarUrl);
         await _storage.setUserKey(userKey);
+        await _storage.setUserUid(respUid);
+        await _storage.setAuthServer(server);
+        await _storage.setForumSessionCookie(loginSessionCookie);
         await _storage.setLoggedIn(true);
 
         await _db.switchUser(userKey);
@@ -522,6 +763,9 @@ class AuthProvider extends ChangeNotifier {
         _persona.switchUser(userKey);
 
         _authToken = jwtToken;
+        _forumSessionCookie = loginSessionCookie;
+        _userUid = respUid;
+        _selectedServer = server;
         _userEmail = effectiveEmail;
         _userName = respUsername;
         _avatar = avatarUrl;
@@ -532,6 +776,7 @@ class AuthProvider extends ChangeNotifier {
         _isLoading = false;
 
         await refreshAccountsList(notify: false);
+        _startGroupMembershipMonitor();
         notifyListeners();
         return true;
       } else {
@@ -571,15 +816,39 @@ class AuthProvider extends ChangeNotifier {
         final name = profile['name']?.toString() ?? profile['username']?.toString() ?? email;
         final avatar = profile['avatar']?.toString();
 
-        final groups = (profile['groups'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        final uid = profile['id']?.toString() ?? accountData['uid']?.toString() ?? '';
+        final accServer = profile['server']?.toString().trim() ?? 'vn.s3';
+        var groups = (profile['groups'] as List?)?.map((e) => e.toString()).toList() ?? <String>[];
+
+        // Luôn xác thực trực tuyến tư cách nhóm trước khi cho chuyển nhanh tài khoản
+        if (!checkActorAccess(email: email, name: name, groups: const [])) {
+          final liveRes = await _checkLiveGroups(
+            uid: uid,
+            username: name,
+            email: email,
+            server: accServer,
+          );
+          if (liveRes.verified) {
+            groups = List<String>.from(liveRes.groups);
+            await _multiAccount.updateAccountGroups(
+              accountId: accountId,
+              uid: uid,
+              email: email,
+              username: name,
+              groups: groups,
+            );
+          }
+        }
+
         if (!checkActorAccess(email: email, name: name, groups: groups)) {
-          _errorMessage = 'Tài khoản "$email" không thuộc nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
+          _errorMessage =
+              'Tài khoản "$email" không thuộc hoặc đã bị gỡ khỏi nhóm "nhóm-diễn-viên-mxh" trên diễn đàn type.vn.';
+          await refreshAccountsList(notify: false);
           _isLoading = false;
           notifyListeners();
           return false;
         }
 
-        final uid = profile['id']?.toString() ?? accountData['uid']?.toString() ?? '';
         final storedKey = accountData['userKey']?.toString() ?? profile['userKey']?.toString();
         final userKey = (storedKey != null && storedKey.trim().isNotEmpty)
             ? storedKey.trim()
@@ -595,12 +864,18 @@ class AuthProvider extends ChangeNotifier {
         await _storage.setUserName(name);
         await _storage.setUserAvatar(avatar);
         await _storage.setUserKey(userKey);
+        await _storage.setUserUid(uid);
+        await _storage.setAuthServer(accServer);
+        await _storage.setForumSessionCookie(null);
         await _storage.setLoggedIn(true);
 
         await _db.switchUser(userKey);
         await _localConfig.switchUser(userKey);
         _persona.switchUser(userKey);
 
+        _userUid = uid;
+        _selectedServer = accServer;
+        _forumSessionCookie = null;
         _userEmail = email;
         _userName = name;
         _avatar = avatar;
@@ -610,6 +885,7 @@ class AuthProvider extends ChangeNotifier {
         _errorMessage = null;
 
         await refreshAccountsList(notify: false);
+        _startGroupMembershipMonitor();
         _isLoading = false;
         notifyListeners();
         return true;
@@ -644,9 +920,12 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _stopGroupMembershipMonitor();
     await _storage.clearAuth();
     _isAuthenticated = false;
     _authToken = null;
+    _forumSessionCookie = null;
+    _userUid = null;
     _userEmail = null;
     _userName = null;
     _avatar = null;

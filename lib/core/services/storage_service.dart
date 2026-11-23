@@ -18,6 +18,9 @@ class StorageService {
   static const String _keyUserName = 'user_name';
   static const String _keyUserAvatar = 'user_avatar';
   static const String _keyUserKey = 'user_key';
+  static const String _keyUserUid = 'user_uid';
+  static const String _keyAuthServer = 'auth_server';
+  static const String _keyForumSessionCookie = 'forum_session_cookie';
   static const String _keyIsLoggedIn = 'is_logged_in';
   static const String _keyRememberMe = 'remember_me';
 
@@ -183,6 +186,51 @@ class StorageService {
     }
   }
 
+  Future<String?> getUserUid() async {
+    await init();
+    return _prefs.getString(_keyUserUid);
+  }
+
+  Future<void> setUserUid(String? uid) async {
+    await init();
+    final cleaned = uid?.trim() ?? '';
+    if (cleaned.isEmpty) {
+      await _prefs.remove(_keyUserUid);
+    } else {
+      await _prefs.setString(_keyUserUid, cleaned);
+    }
+  }
+
+  Future<String?> getAuthServer() async {
+    await init();
+    return _prefs.getString(_keyAuthServer);
+  }
+
+  Future<void> setAuthServer(String? server) async {
+    await init();
+    final cleaned = server?.trim() ?? '';
+    if (cleaned.isEmpty) {
+      await _prefs.remove(_keyAuthServer);
+    } else {
+      await _prefs.setString(_keyAuthServer, cleaned);
+    }
+  }
+
+  Future<String?> getForumSessionCookie() async {
+    await init();
+    return _prefs.getString(_keyForumSessionCookie);
+  }
+
+  Future<void> setForumSessionCookie(String? cookie) async {
+    await init();
+    final cleaned = cookie?.trim() ?? '';
+    if (cleaned.isEmpty) {
+      await _prefs.remove(_keyForumSessionCookie);
+    } else {
+      await _prefs.setString(_keyForumSessionCookie, cleaned);
+    }
+  }
+
   Future<void> clearAuth() async {
     await init();
     await _prefs.remove(_keyAuthToken);
@@ -190,6 +238,9 @@ class StorageService {
     await _prefs.remove(_keyUserName);
     await _prefs.remove(_keyUserAvatar);
     await _prefs.remove(_keyUserKey);
+    await _prefs.remove(_keyUserUid);
+    await _prefs.remove(_keyAuthServer);
+    await _prefs.remove(_keyForumSessionCookie);
     await _prefs.remove(_keyActiveServerId);
     await _prefs.setBool(_keyIsLoggedIn, false);
   }

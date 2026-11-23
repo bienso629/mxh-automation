@@ -224,6 +224,61 @@ class MultiAccountService {
     return null;
   }
 
+  Future<void> updateAccountGroups({
+    String? accountId,
+    String? uid,
+    String? email,
+    String? username,
+    required List<String> groups,
+  }) async {
+    final list = await _loadAllRawAccounts();
+    if (list.isEmpty) return;
+
+    final cleanId = accountId?.trim().toLowerCase() ?? '';
+    final cleanUid = uid?.trim() ?? '';
+    final cleanEmail = email?.trim().toLowerCase() ?? '';
+    final cleanUser = username?.trim().toLowerCase() ?? '';
+    bool changed = false;
+
+    for (int i = 0; i < list.length; i++) {
+      final item = list[i];
+      final profile = item['profile'] is Map
+          ? Map<String, dynamic>.from(item['profile'] as Map)
+          : (item['user'] is Map ? Map<String, dynamic>.from(item['user'] as Map) : null);
+      final itemId = item['id']?.toString().trim().toLowerCase() ?? '';
+      final itemUid = (profile?['id']?.toString() ?? item['uid']?.toString() ?? '').trim();
+      final itemEmail = (profile?['email']?.toString() ?? '').trim().toLowerCase();
+      final itemName = (profile?['name']?.toString() ?? profile?['username']?.toString() ?? '').trim().toLowerCase();
+
+      final matched = (cleanId.isNotEmpty && itemId == cleanId) ||
+          (cleanUid.isNotEmpty && itemUid == cleanUid) ||
+          (cleanEmail.isNotEmpty && (itemEmail == cleanEmail || itemId == cleanEmail)) ||
+          (cleanUser.isNotEmpty && itemName == cleanUser);
+
+      if (!matched) continue;
+
+      final updated = Map<String, dynamic>.from(item);
+      updated['groups'] = List<String>.from(groups);
+      if (updated['user'] is Map) {
+        final u = Map<String, dynamic>.from(updated['user'] as Map);
+        u['groups'] = List<String>.from(groups);
+        updated['user'] = u;
+      }
+      if (updated['profile'] is Map) {
+        final p = Map<String, dynamic>.from(updated['profile'] as Map);
+        p['groups'] = List<String>.from(groups);
+        updated['profile'] = p;
+      }
+      updated['updatedAt'] = DateTime.now().millisecondsSinceEpoch;
+      list[i] = updated;
+      changed = true;
+    }
+
+    if (changed) {
+      await _saveAllRawAccounts(list);
+    }
+  }
+
   Future<void> removeAccount(String accountId) async {
     final list = await _loadAllRawAccounts();
     list.removeWhere((e) => e['id']?.toString() == accountId);
