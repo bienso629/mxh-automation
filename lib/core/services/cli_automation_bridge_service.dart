@@ -988,7 +988,7 @@ def fast_action(ips, platform="facebook", action="like", url=None, comment=None)
                 pass
                 
         # Tìm macro lưu riêng hoặc dùng tọa độ chuẩn
-        macro_map = p_info.get("automation_macros", {})
+        macro_map = p_info.get("automation_macros") or {}
         macro = macro_map.get(f"{platform}_{action}") or macro_map.get(f"{platform}_like")
         if macro and "x_percent" in macro and "y_percent" in macro:
             tap_x = int(width * float(macro["x_percent"]))
@@ -1014,7 +1014,7 @@ def fast_action(ips, platform="facebook", action="like", url=None, comment=None)
             else:
                 subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(tap_x), str(tap_y)], check=False)
             time.sleep(0.8)
-            print(f"Đã bấm LIKE thành công trên thiết bị {serial} ({p_name}) tại tọa độ ({tap_x}, {tap_y})")
+            print(f"[CHƯA KIỂM CHỨNG] Đã gửi thao tác chạm LIKE thô trên {serial} ({p_name}) tại ({tap_x}, {tap_y}). BẮT BUỘC gọi `ui-dump --serial {serial}` kiểm chứng trạng thái thực tế!")
             
         # Comment nếu có
         if action in ["comment", "like_and_comment"]:
@@ -1024,13 +1024,218 @@ def fast_action(ips, platform="facebook", action="like", url=None, comment=None)
             subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(int(width * 0.4)), str(int(height * 0.95))], check=False)
             time.sleep(0.6)
             c_text = comment if comment else "Bài viết rất hay!"
-            b64_txt = base64.b64encode(c_text.encode("utf-8")).decode("utf-8")
-            subprocess.run([sdk_adb, "-s", serial, "shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", b64_txt], check=False)
-            esc_txt = c_text.replace(" ", "%s").replace("'", "\\'")
-            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "text", esc_txt], check=False)
+            adb_type_text(serial, c_text)
             time.sleep(0.5)
             subprocess.run([sdk_adb, "-s", serial, "shell", "input", "keyevent", "66"], check=False)
-            print(f"Đã gửi bình luận thành công trên thiết bị {serial} ({p_name})")
+            print(f"[CHƯA KIỂM CHỨNG] Đã thử gửi thao tác bình luận thô trên {serial} ({p_name}). BẮT BUỘC gọi `ui-dump --serial {serial}` kiểm chứng bình luận đã hiển thị!")
+
+def _parse_bounds_center(bounds_str):
+    m = re.match(r"\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]", bounds_str or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    return ((x1 + x2) // 2, (y1 + y2) // 2, x1, y1, x2, y2)
+
+def _dump_ui_nodes(serial):
+    import xml.etree.ElementTree as ET
+    sdk_adb = _resolve_adb_binary()
+    remote_xml = "/sdcard/mxh_ui_dump.xml"
+    subprocess.run([sdk_adb, "-s", serial, "shell", "rm", "-f", remote_xml], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    dump_res = subprocess.run(
+        [sdk_adb, "-s", serial, "shell", "uiautomator", "dump", remote_xml],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=20
+    )
+    cat_res = subprocess.run(
+        [sdk_adb, "-s", serial, "shell", "cat", remote_xml],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=15
+    )
+    xml_text = cat_res.stdout or ""
+    if "<hierarchy" not in xml_text:
+        return None, (dump_res.stderr or dump_res.stdout or cat_res.stderr or "Không đọc được UI hierarchy")
+
+    focus_res = subprocess.run(
+        [sdk_adb, "-s", serial, "shell", "dumpsys", "window", "displays"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=10
+    )
+    focus_line = ""
+    for ln in (focus_res.stdout or "").splitlines():
+        if "mCurrentFocus=" in ln or "mFocusedApp=" in ln:
+            focus_line = ln.strip()
+            break
+
+    size_res = subprocess.run(
+        [sdk_adb, "-s", serial, "shell", "wm", "size"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=10
+    )
+    screen_size = (size_res.stdout or "").strip().splitlines()[-1] if (size_res.stdout or "").strip() else "unknown"
+
+    root = ET.fromstring(xml_text[xml_text.find("<hierarchy"):])
+    nodes = []
+    idx = 0
+
+    def walk(elem, parent_clickable=False):
+        nonlocal idx
+        text = (elem.attrib.get("text") or "").strip()
+        desc = (elem.attrib.get("content-desc") or "").strip()
+        res_id = (elem.attrib.get("resource-id") or "").strip()
+        cls = (elem.attrib.get("class") or "").strip().split(".")[-1]
+        clickable = elem.attrib.get("clickable") == "true"
+        selected = elem.attrib.get("selected") == "true"
+        checked = elem.attrib.get("checked") == "true"
+        focused = elem.attrib.get("focused") == "true"
+        bounds = elem.attrib.get("bounds") or ""
+        parsed = _parse_bounds_center(bounds)
+
+        is_edit = "EditText" in (elem.attrib.get("class") or "")
+        interesting = bool(text or desc or clickable or is_edit)
+        if interesting and parsed:
+            cx, cy, x1, y1, x2, y2 = parsed
+            if (x2 - x1) > 0 and (y2 - y1) > 0:
+                idx += 1
+                item = {
+                    "id": idx,
+                    "cx": cx,
+                    "cy": cy,
+                    "bounds": bounds,
+                    "cls": cls,
+                }
+                if text: item["text"] = text[:160]
+                if desc: item["desc"] = desc[:160]
+                if res_id: item["res_id"] = res_id.split("/")[-1]
+                if clickable or parent_clickable: item["clickable"] = True
+                if selected: item["selected"] = True
+                if checked: item["checked"] = True
+                if focused: item["focused"] = True
+                if is_edit: item["editable"] = True
+                nodes.append(item)
+
+        for child in elem:
+            walk(child, clickable or parent_clickable)
+
+    walk(root, False)
+    return {
+        "serial": serial,
+        "screen": screen_size,
+        "focus": focus_line,
+        "node_count": len(nodes),
+        "nodes": nodes[:180],
+    }, None
+
+def ui_dump_cmd(serial):
+    data, err = _dump_ui_nodes(serial)
+    if err or data is None:
+        print(json.dumps({"ok": False, "error": err or "UI dump failed"}, ensure_ascii=False))
+        sys.exit(1)
+    print(json.dumps({"ok": True, **data}, ensure_ascii=False, indent=2))
+
+def adb_tap_cmd(serial, x=None, y=None, match=None, match_index=0):
+    sdk_adb = _resolve_adb_binary()
+    if match:
+        data, err = _dump_ui_nodes(serial)
+        if err or data is None:
+            print(json.dumps({"ok": False, "error": f"UI dump lỗi: {err}"}, ensure_ascii=False))
+            sys.exit(1)
+        needle = match.strip().lower()
+        matches = []
+        for n in data["nodes"]:
+            hay_text = (n.get("text") or "").lower()
+            hay_desc = (n.get("desc") or "").lower()
+            hay_res = (n.get("res_id") or "").lower()
+            if needle in hay_desc or needle in hay_text or needle in hay_res:
+                matches.append(n)
+        if not matches:
+            print(json.dumps({"ok": False, "error": f"Không tìm thấy phần tử UI khớp '{match}' trên {serial}"}, ensure_ascii=False))
+            sys.exit(1)
+        # Ưu tiên node có clickable=True
+        clickable_matches = [m for m in matches if m.get("clickable")]
+        pool = clickable_matches if clickable_matches else matches
+        chosen = pool[min(max(match_index, 0), len(pool) - 1)]
+        tx, ty = chosen["cx"], chosen["cy"]
+        subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(tx), str(ty)], check=False)
+        print(json.dumps({"ok": True, "tapped": [tx, ty], "matched_node": chosen, "total_matches": len(matches)}, ensure_ascii=False))
+        return
+
+    if x is None or y is None:
+        print(json.dumps({"ok": False, "error": "Cần truyền --x và --y hoặc --match"}, ensure_ascii=False))
+        sys.exit(1)
+    subprocess.run([sdk_adb, "-s", serial, "shell", "input", "tap", str(x), str(y)], check=False)
+    print(json.dumps({"ok": True, "tapped": [x, y], "serial": serial}, ensure_ascii=False))
+
+def adb_type_text(serial, text):
+    sdk_adb = _resolve_adb_binary()
+    if not text:
+        print(json.dumps({"ok": False, "error": "Nội dung --text rỗng"}, ensure_ascii=False))
+        sys.exit(1)
+
+    has_non_ascii = any(ord(ch) > 127 for ch in text)
+    ime_list_res = subprocess.run([sdk_adb, "-s", serial, "shell", "ime", "list", "-s"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    installed_imes = [ln.strip() for ln in (ime_list_res.stdout or "").splitlines() if ln.strip()]
+    adb_ime = next((i for i in installed_imes if "adbkeyboard" in i.lower()), None)
+    method_used = "none"
+
+    if adb_ime:
+        cur_ime_res = subprocess.run([sdk_adb, "-s", serial, "shell", "settings", "get", "secure", "default_input_method"], stdout=subprocess.PIPE, text=True, check=False)
+        prev_ime = (cur_ime_res.stdout or "").strip()
+        subprocess.run([sdk_adb, "-s", serial, "shell", "ime", "enable", adb_ime], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        subprocess.run([sdk_adb, "-s", serial, "shell", "ime", "set", adb_ime], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        time.sleep(0.4)
+        b64_txt = base64.b64encode(text.encode("utf-8")).decode("utf-8")
+        subprocess.run([sdk_adb, "-s", serial, "shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", b64_txt], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        time.sleep(0.5)
+        if prev_ime and prev_ime != "null" and prev_ime != adb_ime:
+            subprocess.run([sdk_adb, "-s", serial, "shell", "ime", "set", prev_ime], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        method_used = "adb_keyboard_b64"
+    elif has_non_ascii:
+        # Thử đẩy vào clipboard Android (hỗ trợ UTF-8 đầy đủ trên nhiều bản Android 11-16) rồi dán (KEYCODE_PASTE = 279)
+        clip_res = subprocess.run([sdk_adb, "-s", serial, "shell", "cmd", "clipboard", "set-text", text], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if clip_res.returncode == 0:
+            time.sleep(0.3)
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "keyevent", "279"], check=False)
+            time.sleep(0.4)
+            method_used = "cmd_clipboard_paste"
+        else:
+            # Fallback Android service call clipboard hoặc input text ASCII
+            b64_txt = base64.b64encode(text.encode("utf-8")).decode("utf-8")
+            subprocess.run([sdk_adb, "-s", serial, "shell", "am", "broadcast", "-a", "clipper.set", "-e", "text", text], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            subprocess.run([sdk_adb, "-s", serial, "shell", "input", "keyevent", "279"], check=False)
+            time.sleep(0.4)
+            method_used = "clipper_or_paste"
+    else:
+        esc = text.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'").replace('"', '\\\\"').replace(" ", "%s")
+        subprocess.run([sdk_adb, "-s", serial, "shell", "input", "text", esc], check=False)
+        time.sleep(0.4)
+        method_used = "adb_input_ascii"
+
+    # Kiểm tra nhanh xem EditText đang focus có nhận được văn bản hay chưa
+    verify_texts = []
+    data, _ = _dump_ui_nodes(serial)
+    if data:
+        for n in data["nodes"]:
+            if n.get("editable") and n.get("text"):
+                verify_texts.append(n["text"])
+
+    warning = None
+    if has_non_ascii and not any(text[:6].lower() in vt.lower() for vt in verify_texts) and method_used != "adb_keyboard_b64":
+        warning = "Thiết bị chưa cài ADBKeyboard và clipboard hệ thống không dán được tiếng Việt có dấu. Hãy kiểm tra EditText bằng ui-dump hoặc cài ADBKeyboard trên máy ảo."
+
+    print(json.dumps({
+        "ok": warning is None,
+        "method": method_used,
+        "requested_text": text,
+        "edittext_values": verify_texts,
+        "warning": warning,
+    }, ensure_ascii=False))
+
+def adb_screenshot_cmd(serial, out_path):
+    sdk_adb = _resolve_adb_binary()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    res = subprocess.run([sdk_adb, "-s", serial, "exec-out", "screencap", "-p"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=20)
+    if res.returncode != 0 or not res.stdout:
+        print(json.dumps({"ok": False, "error": res.stderr.decode("utf-8", errors="ignore")}, ensure_ascii=False))
+        sys.exit(1)
+    with open(out_path, "wb") as f:
+        f.write(res.stdout)
+    print(json.dumps({"ok": True, "path": os.path.abspath(out_path), "bytes": len(res.stdout)}, ensure_ascii=False))
 
 def main():
     parser = argparse.ArgumentParser(description="MXH Auto CLI Tool for Local CLI Agents")
@@ -1063,13 +1268,36 @@ def main():
     p_cdev.add_argument("--ips", nargs="+", help="Danh sách các IP nhân vật")
 
     # fast-action
-    p_act = subparsers.add_parser("fast-action", help="Tự động tương tác siêu tốc (like, comment) trên app cho nhân vật")
+    p_act = subparsers.add_parser("fast-action", help="Gửi chạm tọa độ nhanh (CHƯA kiểm chứng UI) cho nhân vật")
     p_act.add_argument("--ip", help="IP nhân vật")
     p_act.add_argument("--ips", nargs="+", help="Danh sách các IP nhân vật")
     p_act.add_argument("--platform", default="facebook", choices=["facebook", "tiktok"], help="Nền tảng MXH")
     p_act.add_argument("--action", default="like", choices=["like", "comment", "like_and_comment"], help="Hành động")
     p_act.add_argument("--url", help="URL video/bài viết")
     p_act.add_argument("--comment", help="Nội dung bình luận")
+
+    # ui-dump
+    p_ui = subparsers.add_parser("ui-dump", help="Đọc cây giao diện Android thật kèm tọa độ tâm (cx, cy) từng nút")
+    p_ui.add_argument("--serial", required=True, help="ADB serial (vd: emulator-5554)")
+
+    # adb-tap
+    p_tap = subparsers.add_parser("adb-tap", help="Chạm tọa độ hoặc tự dò theo nhãn text/content-desc trên Android")
+    p_tap.add_argument("--serial", required=True, help="ADB serial")
+    p_tap.add_argument("--x", type=int, help="Tọa độ X")
+    p_tap.add_argument("--y", type=int, help="Tọa độ Y")
+    p_tap.add_argument("--match", help="Chuỗi khớp text/content-desc/resource-id")
+    p_tap.add_argument("--index", type=int, default=0, help="Thứ tự node khớp nếu có nhiều kết quả")
+
+    # adb-type
+    p_type = subparsers.add_parser("adb-type", help="Nhập văn bản (hỗ trợ tiếng Việt UTF-8) vào ô đang chọn trên Android")
+    p_type.add_argument("--serial", required=True, help="ADB serial")
+    p_type.add_argument("--text", required=True, help="Văn bản cần nhập")
+
+    # adb-screenshot
+    import tempfile
+    p_shot = subparsers.add_parser("adb-screenshot", help="Chụp ảnh màn hình thiết bị Android để kiểm chứng trực quan")
+    p_shot.add_argument("--serial", required=True, help="ADB serial")
+    p_shot.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "mxh_android_screen.png"), help="Đường dẫn file PNG lưu ảnh")
 
     args = parser.parse_args()
     if args.command == "list-profiles":
@@ -1107,6 +1335,14 @@ def main():
             print("Lỗi: Cần cung cấp --ip hoặc --ips", file=sys.stderr)
             sys.exit(1)
         fast_action(ips, args.platform, args.action, args.url, args.comment)
+    elif args.command == "ui-dump":
+        ui_dump_cmd(args.serial)
+    elif args.command == "adb-tap":
+        adb_tap_cmd(args.serial, x=args.x, y=args.y, match=args.match, match_index=args.index)
+    elif args.command == "adb-type":
+        adb_type_text(args.serial, args.text)
+    elif args.command == "adb-screenshot":
+        adb_screenshot_cmd(args.serial, args.out)
     else:
         parser.print_help()
 
@@ -1148,9 +1384,17 @@ if __name__ == "__main__":
     buffer.writeln('5. Đóng thiết bị máy ảo Android:');
     buffer.writeln('   $helperPath close-device --ip <IP>');
     buffer.writeln('   $helperPath close-device --ips <IP1> <IP2> ...');
-    buffer.writeln('6. TƯƠNG TÁC TỰ ĐỘNG SIÊU TỐC TRÊN APP (Like / Comment Facebook, TikTok):');
-    buffer.writeln('   $helperPath fast-action --ips <IP1> <IP2> ... --platform <facebook|tiktok> --action <like|comment|like_and_comment> --url <URL>');
-    buffer.writeln('   (Lệnh fast-action tự động mở thiết bị nếu chưa mở, mở app vào đúng ảnh/video và bấm like siêu tốc cho tất cả IP).');
+    buffer.writeln('6. ĐIỀU KHIỂN & KIỂM CHỨNG GIAO DIỆN ANDROID THẬT (BẮT BUỘC DÙNG CHO LIKE / COMMENT / ĐĂNG BÀI / LIVESTREAM):');
+    buffer.writeln('   - Đọc toàn bộ các nút/chữ trên màn hình Android kèm tọa độ tâm (cx, cy) và trạng thái selected/focused:');
+    buffer.writeln('     $helperPath ui-dump --serial <ADB_SERIAL>');
+    buffer.writeln('   - Chạm đúng nút theo tọa độ hoặc theo nhãn text/content-desc:');
+    buffer.writeln('     $helperPath adb-tap --serial <ADB_SERIAL> --x <CX> --y <CY>');
+    buffer.writeln('     $helperPath adb-tap --serial <ADB_SERIAL> --match "<NHÃN_NÚT>"');
+    buffer.writeln('   - Nhập văn bản (hỗ trợ tiếng Việt UTF-8) vào ô đang chọn:');
+    buffer.writeln('     $helperPath adb-type --serial <ADB_SERIAL> --text "<NỘI_DUNG>"');
+    buffer.writeln('   - Chụp ảnh màn hình thiết bị để quan sát và kiểm chứng trực quan:');
+    buffer.writeln('     $helperPath adb-screenshot --serial <ADB_SERIAL> --out /tmp/mxh_screen.png');
+    buffer.writeln('   - CẢNH BÁO: KHÔNG dùng `fast-action` như đường tắt mà không kiểm chứng! `fast-action` chỉ chạm tọa độ cố định mù, rất dễ trượt. Bắt buộc phải dùng `ui-dump` (và `adb-screenshot` nếu cần) để thao tác đúng tọa độ thật và xác nhận kết quả thực tế!');
     buffer.writeln('7. Tra cứu danh sách nhân vật:');
     buffer.writeln('   $helperPath list-profiles');
     buffer.writeln('8. ĐIỀU KHIỂN TRANG WEB THẬT (bấm nút, gõ chữ, tải video lên Facebook...):');
@@ -1181,10 +1425,12 @@ if __name__ == "__main__":
         }
       }
     }
-    // Fallback: Nếu workingDir không có hoặc không trích xuất đủ khóa, lấy từ PersonaService activeScopeIps
-    for (final activeIp in _personaService.activeScopeIps) {
-      if (!scopeIps.contains(activeIp)) {
-        scopeIps.add(activeIp);
+    // Fallback: Chỉ lấy từ PersonaService activeScopeIps khi workingDir KHÔNG chỉ định nhân vật cụ thể
+    if (scopeIps.isEmpty) {
+      for (final activeIp in _personaService.activeScopeIps) {
+        if (!scopeIps.contains(activeIp)) {
+          scopeIps.add(activeIp);
+        }
       }
     }
 
@@ -1223,8 +1469,11 @@ if __name__ == "__main__":
       if (scopeIps.isNotEmpty) {
         buffer.writeln('  QUAN TRỌNG: Scope có ${scopeIps.length} nhân vật (${scopeIps.join(', ')}).');
         buffer.writeln('  BẮT BUỘC PHẢI THỰC THI TÁC VỤ CHO TOÀN BỘ ${scopeIps.length} NHÂN VẬT, TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ CHẠY 1 NGƯỜI.');
-        buffer.writeln('  + Nếu người dùng yêu cầu tương tác (like, comment, xem video) trên app Facebook/TikTok:');
-        buffer.writeln('    Chạy ngay: $helperPath fast-action --ips ${scopeIps.join(' ')} --platform <facebook|tiktok> --action like --url <URL>');
+        buffer.writeln('  + Nếu người dùng yêu cầu tương tác (like, thả tim, bình luận, đăng bài, xem livestream) trên app Android:');
+        buffer.writeln('    1) Đảm bảo thiết bị đang mở (nếu chưa có ADB serial sẵn thì chạy `$helperPath open-device --ip <IP>`).');
+        buffer.writeln('    2) Mở URL trên thiết bị bằng `adb -s <SERIAL> shell am start -a android.intent.action.VIEW -d "<URL>" ...`, chờ app tải xong.');
+        buffer.writeln('    3) Dùng `$helperPath ui-dump --serial <SERIAL>` (và `adb-screenshot` nếu cần) để đọc chính xác nút thật, bấm bằng `$helperPath adb-tap`, nhập chữ bằng `$helperPath adb-type`.');
+        buffer.writeln('    4) Gọi lại `$helperPath ui-dump --serial <SERIAL>` sau khi thao tác để KIỂM CHỨNG 100% nút đã đổi trạng thái hoặc bình luận đã xuất hiện công khai rồi mới kết thúc.');
         buffer.writeln('  + Nếu người dùng chỉ muốn mở máy ảo thiết bị:');
         buffer.writeln('    Chạy ngay: $helperPath open-device --ips ${scopeIps.join(' ')}');
       }

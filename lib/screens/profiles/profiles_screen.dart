@@ -976,75 +976,82 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                             const SizedBox(height: 12),
 
                             // Prompt tạo Avatar AI
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Prompt tạo Avatar AI', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite)),
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    InkWell(
-                                      onTap: () {
-                                        final currentP = _personas[persona.effectiveEntryKey] ?? persona;
-                                        if (_generatingAvatarIps.contains(currentP.ip)) return;
-                                        final currentPWithForm = currentP.copyWith(
-                                          name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : currentP.name,
-                                          age: int.tryParse(ageCtrl.text.trim()) ?? currentP.age,
-                                          gender: selectedGender,
-                                          bio: bioCtrl.text.trim(),
-                                          avatarPrompt: promptCtrl.text.trim(),
-                                          agentInfo: agentInfoCtrl.text.trim(),
-                                        );
-                                        _handleGenerateAvatar(currentPWithForm, setModalState: setDialogState);
-                                      },
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.accentCyan.withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(color: AppColors.accentCyan.withValues(alpha: 0.35), width: 0.8),
-                                        ),
-                                        child: const Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.auto_awesome_rounded, size: 12, color: AppColors.accentCyan),
-                                            SizedBox(width: 5),
-                                            Text(
-                                              'Vẽ lại ảnh theo prompt này',
-                                              style: TextStyle(fontSize: 11, color: AppColors.accentCyan, fontWeight: FontWeight.bold),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    InkWell(
-                                      onTap: () => _copyToClipboard(promptCtrl.text, 'Avatar Prompt'),
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.primary.withValues(alpha: 0.15),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.35), width: 0.8),
-                                        ),
-                                        child: const Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.copy_rounded, size: 12, color: AppColors.primaryLight),
-                                            SizedBox(width: 5),
-                                            Text(
-                                              'Sao chép prompt',
-                                              style: TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
-                                            ),
-                                          ],
+                            SizedBox(
+                              width: double.infinity,
+                              child: Wrap(
+                                alignment: WrapAlignment.spaceBetween,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: [
+                                  const Text('Prompt tạo Avatar AI', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite)),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 6,
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    children: [
+                                      InkWell(
+                                        onTap: () {
+                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
+                                          if (_generatingAvatarIps.contains(currentP.ip)) return;
+                                          final currentPWithForm = currentP.copyWith(
+                                            name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : currentP.name,
+                                            age: int.tryParse(ageCtrl.text.trim()) ?? currentP.age,
+                                            gender: selectedGender,
+                                            bio: bioCtrl.text.trim(),
+                                            avatarPrompt: promptCtrl.text.trim(),
+                                            agentInfo: agentInfoCtrl.text.trim(),
+                                          );
+                                          _handleGenerateAvatar(currentPWithForm, setModalState: setDialogState);
+                                        },
+                                        borderRadius: BorderRadius.circular(4),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.accentCyan.withValues(alpha: 0.12),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: AppColors.accentCyan.withValues(alpha: 0.35), width: 0.8),
+                                          ),
+                                          child: const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.auto_awesome_rounded, size: 12, color: AppColors.accentCyan),
+                                              SizedBox(width: 5),
+                                              Text(
+                                                'Vẽ lại ảnh theo prompt này',
+                                                style: TextStyle(fontSize: 11, color: AppColors.accentCyan, fontWeight: FontWeight.bold),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                                      InkWell(
+                                        onTap: () => _copyToClipboard(promptCtrl.text, 'Avatar Prompt'),
+                                        borderRadius: BorderRadius.circular(4),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.primary.withValues(alpha: 0.15),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: AppColors.primary.withValues(alpha: 0.35), width: 0.8),
+                                          ),
+                                          child: const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.copy_rounded, size: 12, color: AppColors.primaryLight),
+                                              SizedBox(width: 5),
+                                              Text(
+                                                'Sao chép prompt',
+                                                style: TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
                             const SizedBox(height: 5),
                             TextField(
@@ -1088,22 +1095,28 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Row(
-                                        children: [
-                                          Icon(
-                                            useExternalDevice ? Icons.cell_wifi_rounded : Icons.phone_android_rounded,
-                                            size: 16,
-                                            color: useExternalDevice ? AppColors.accent : AppColors.primaryLight,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            useExternalDevice
-                                                ? 'Thiết bị ngoại vi (WiFi ADB)'
-                                                : 'Máy ảo Android (AVD / LDPlayer)',
-                                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite),
-                                          ),
-                                        ],
+                                      Expanded(
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              useExternalDevice ? Icons.cell_wifi_rounded : Icons.phone_android_rounded,
+                                              size: 16,
+                                              color: useExternalDevice ? AppColors.accent : AppColors.primaryLight,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Text(
+                                                useExternalDevice
+                                                    ? 'Thiết bị ngoại vi (WiFi ADB)'
+                                                    : 'Máy ảo Android (AVD / LDPlayer)',
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
+                                      const SizedBox(width: 8),
                                       SizedBox(
                                         height: 24,
                                         child: Switch(
@@ -1318,626 +1331,663 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        Wrap(
+                                          spacing: 6,
+                                          runSpacing: 4,
+                                          crossAxisAlignment: WrapCrossAlignment.center,
                                           children: [
-                                            Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Text(
-                                                  'Chọn máy ảo (AVD / LDPlayer)',
-                                                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
-                                                ),
-                                                const SizedBox(width: 6),
-                                                () {
-                                                  final isLdSel = Socks5ProxyService.isLdPlayerId(selectedAvd);
-                                                  final isAdbSel = Socks5ProxyService.isAdbConnectedId(selectedAvd);
-                                                  final isReady = isLdSel ||
-                                                      isAdbSel ||
-                                                      hasPersonaAvd ||
-                                                      (selectedAvd != null && availableAvds.contains(selectedAvd));
-                                                  final badgeLabel = isLdSel
-                                                      ? 'Đã gắn LDPlayer'
-                                                      : (isAdbSel
-                                                          ? 'Đã gắn ADB'
-                                                          : (isReady ? 'Đã có máy ảo' : 'Chưa cài đặt'));
-                                                  return Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                                    decoration: BoxDecoration(
-                                                      color: isReady ? AppColors.accent.withValues(alpha: 0.15) : AppColors.danger.withValues(alpha: 0.15),
-                                                      borderRadius: BorderRadius.circular(3),
-                                                      border: Border.all(
-                                                        color: isReady ? AppColors.accent.withValues(alpha: 0.5) : AppColors.danger.withValues(alpha: 0.5),
-                                                        width: 0.8,
-                                                      ),
-                                                    ),
-                                                    child: Text(
-                                                      badgeLabel,
-                                                      style: TextStyle(
-                                                        fontSize: 9,
-                                                        fontWeight: FontWeight.bold,
-                                                        color: isReady ? AppColors.accent : AppColors.danger,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }(),
-                                              ],
+                                            const Text(
+                                              'Chọn máy ảo (AVD / LDPlayer)',
+                                              style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
                                             ),
-                                            Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                // NÚT QUÉT LẠI DANH SÁCH LDPLAYER / ANDROID STUDIO ADB
-                                                InkWell(
-                                                  onTap: isLoadingAvds
-                                                      ? null
-                                                      : () => refreshModalDevices(forceRefresh: true, showToast: true),
-                                                  borderRadius: BorderRadius.circular(4),
-                                                  child: Padding(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                    child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        if (isLoadingAvds)
-                                                          const SizedBox(
-                                                            width: 10,
-                                                            height: 10,
-                                                            child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accentCyan),
-                                                          )
-                                                        else
-                                                          const Icon(Icons.refresh_rounded, size: 12, color: AppColors.accentCyan),
-                                                        const SizedBox(width: 3),
-                                                        Text(
-                                                          isLoadingAvds ? 'Đang quét...' : 'Quét lại',
-                                                          style: const TextStyle(fontSize: 11, color: AppColors.accentCyan, fontWeight: FontWeight.bold),
-                                                        ),
-                                                      ],
-                                                    ),
+                                            () {
+                                              final isLdSel = Socks5ProxyService.isLdPlayerId(selectedAvd);
+                                              final isAdbSel = Socks5ProxyService.isAdbConnectedId(selectedAvd);
+                                              final isReady = isLdSel ||
+                                                  isAdbSel ||
+                                                  hasPersonaAvd ||
+                                                  (selectedAvd != null && availableAvds.contains(selectedAvd));
+                                              final badgeLabel = isLdSel
+                                                  ? 'Đã gắn LDPlayer'
+                                                  : (isAdbSel
+                                                      ? 'Đã gắn ADB'
+                                                      : (isReady ? 'Đã có máy ảo' : 'Chưa cài đặt'));
+                                              return Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                decoration: BoxDecoration(
+                                                  color: isReady ? AppColors.accent.withValues(alpha: 0.15) : AppColors.danger.withValues(alpha: 0.15),
+                                                  borderRadius: BorderRadius.circular(3),
+                                                  border: Border.all(
+                                                    color: isReady ? AppColors.accent.withValues(alpha: 0.5) : AppColors.danger.withValues(alpha: 0.5),
+                                                    width: 0.8,
                                                   ),
                                                 ),
-                                                if (Platform.isWindows) ...[
-                                                  const SizedBox(width: 6),
-                                                  InkWell(
-                                                    onTap: (isActivatingLdPlayer || isLoadingAvds)
-                                                        ? null
-                                                        : () async {
-                                                            setDialogState(() => isActivatingLdPlayer = true);
-                                                            AppToast.info(
-                                                              dialogCtx,
-                                                              'Đang bật driver VT-x LDPlayer và kết nối ADB...',
-                                                            );
-                                                            try {
-                                                              final res = await WindowsLdPlayerBridgeService()
-                                                                  .activateLdPlayerIntegration(launchDefaultVm: true);
-                                                              await _socks5Service.refreshRuntimeStates();
-                                                              if (dialogCtx.mounted) {
-                                                                if (res.success) {
-                                                                  AppToast.success(dialogCtx, res.message);
-                                                                } else if (res.uacCancelled) {
-                                                                  AppToast.warning(dialogCtx, res.message);
-                                                                } else {
-                                                                  AppToast.error(dialogCtx, res.message);
-                                                                }
-                                                                await refreshModalDevices(
-                                                                  forceRefresh: true,
-                                                                  showToast: false,
-                                                                );
-                                                              }
-                                                            } catch (e) {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.error(dialogCtx, 'Lỗi kích hoạt LDPlayer: $e');
-                                                              }
-                                                            } finally {
-                                                              if (dialogCtx.mounted) {
-                                                                setDialogState(() => isActivatingLdPlayer = false);
-                                                              }
+                                                child: Text(
+                                                  badgeLabel,
+                                                  style: TextStyle(
+                                                    fontSize: 9,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isReady ? AppColors.accent : AppColors.danger,
+                                                  ),
+                                                ),
+                                              );
+                                            }(),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 6,
+                                          crossAxisAlignment: WrapCrossAlignment.center,
+                                          children: [
+                                            // NÚT QUÉT LẠI DANH SÁCH LDPLAYER / ANDROID STUDIO ADB
+                                            InkWell(
+                                              onTap: isLoadingAvds
+                                                  ? null
+                                                  : () => refreshModalDevices(forceRefresh: true, showToast: true),
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.accentCyan.withValues(alpha: 0.1),
+                                                  borderRadius: BorderRadius.circular(4),
+                                                  border: Border.all(color: AppColors.accentCyan.withValues(alpha: 0.35), width: 0.8),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    if (isLoadingAvds)
+                                                      const SizedBox(
+                                                        width: 10,
+                                                        height: 10,
+                                                        child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accentCyan),
+                                                      )
+                                                    else
+                                                      const Icon(Icons.refresh_rounded, size: 12, color: AppColors.accentCyan),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      isLoadingAvds ? 'Đang quét...' : 'Quét lại',
+                                                      style: const TextStyle(fontSize: 11, color: AppColors.accentCyan, fontWeight: FontWeight.bold),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                            if (Platform.isWindows)
+                                              InkWell(
+                                                onTap: (isActivatingLdPlayer || isLoadingAvds)
+                                                    ? null
+                                                    : () async {
+                                                        setDialogState(() => isActivatingLdPlayer = true);
+                                                        AppToast.info(
+                                                          dialogCtx,
+                                                          'Đang bật driver VT-x LDPlayer và kết nối ADB...',
+                                                        );
+                                                        try {
+                                                          final res = await WindowsLdPlayerBridgeService()
+                                                              .activateLdPlayerIntegration(launchDefaultVm: true);
+                                                          await _socks5Service.refreshRuntimeStates();
+                                                          if (dialogCtx.mounted) {
+                                                            if (res.success) {
+                                                              AppToast.success(dialogCtx, res.message);
+                                                            } else if (res.uacCancelled) {
+                                                              AppToast.warning(dialogCtx, res.message);
+                                                            } else {
+                                                              AppToast.error(dialogCtx, res.message);
                                                             }
-                                                          },
+                                                            await refreshModalDevices(
+                                                              forceRefresh: true,
+                                                              showToast: false,
+                                                            );
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi kích hoạt LDPlayer: $e');
+                                                          }
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() => isActivatingLdPlayer = false);
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.primaryLight.withValues(alpha: 0.1),
                                                     borderRadius: BorderRadius.circular(4),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                      child: Row(
-                                                        mainAxisSize: MainAxisSize.min,
-                                                        children: [
-                                                          if (isActivatingLdPlayer)
-                                                            const SizedBox(
-                                                              width: 10,
-                                                              height: 10,
-                                                              child: CircularProgressIndicator(
-                                                                strokeWidth: 1.2,
-                                                                color: AppColors.primaryLight,
+                                                    border: Border.all(color: AppColors.primaryLight.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isActivatingLdPlayer)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(
+                                                            strokeWidth: 1.2,
+                                                            color: AppColors.primaryLight,
+                                                          ),
+                                                        )
+                                                      else
+                                                        const Icon(
+                                                          Icons.bolt_rounded,
+                                                          size: 12,
+                                                          color: AppColors.primaryLight,
+                                                        ),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isActivatingLdPlayer ? 'Đang bật...' : 'Bật LDPlayer',
+                                                        style: const TextStyle(
+                                                          fontSize: 11,
+                                                          color: AppColors.primaryLight,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            if (Socks5ProxyService.isExternalEmulatorId(selectedAvd)) ...[
+                                              InkWell(
+                                                onTap: () {
+                                                  final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
+                                                  final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
+                                                  setDialogState(() {
+                                                    selectedAvd = null;
+                                                    hasPersonaAvd = availableAvds.contains(expectedPersonaAvd) ||
+                                                        availableAvds.contains(legacyPersonaClone);
+                                                  });
+                                                },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.warning.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: AppColors.warning.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: const Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(Icons.link_off_rounded, size: 12, color: AppColors.warning),
+                                                      SizedBox(width: 4),
+                                                      Text(
+                                                        'Bỏ gắn',
+                                                        style: TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ] else if (!hasPersonaAvd) ...[
+                                              // NÚT TẠO MỚI (chỉ hiện khi chưa có máy ảo)
+                                              InkWell(
+                                                onTap: (isCreatingPersonaAvd || isImportingPersonaAvd || isDeletingPersonaAvd)
+                                                    ? null
+                                                    : () async {
+                                                        setDialogState(() {
+                                                          isCreatingPersonaAvd = true;
+                                                        });
+                                                        try {
+                                                          AppToast.info(dialogCtx, 'Đang tạo máy ảo AVD độc lập cho IP ${persona.ip}...');
+                                                          final createdAvd = await _socks5Service.createPersonaDeviceAvd(
+                                                            ip: persona.ip,
+                                                            personaName: persona.name,
+                                                            baseAvd: selectedAvd ?? persona.avdName,
+                                                          );
+                                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
+                                                          final updated = currentP.copyWith(avdName: createdAvd);
+                                                          await _personaService.updatePersona(updated);
+                                                          final freshAvds = await _socks5Service.getAvailableAvds();
+                                                          if (mounted) {
+                                                            setState(() {
+                                                              _personas[persona.effectiveEntryKey] = updated;
+                                                              _availableAvds = freshAvds.toSet();
+                                                            });
+                                                          }
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              availableAvds = freshAvds;
+                                                              selectedAvd = createdAvd;
+                                                              hasPersonaAvd = true;
+                                                            });
+                                                            AppToast.success(dialogCtx, 'Đã tạo máy ảo AVD thành công: $createdAvd');
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi tạo máy ảo: $e');
+                                                          }
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              isCreatingPersonaAvd = false;
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.accent.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isCreatingPersonaAvd)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accent),
+                                                        )
+                                                      else
+                                                        const Icon(Icons.add_circle_outline_rounded, size: 12, color: AppColors.accent),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isCreatingPersonaAvd ? 'Đang tạo...' : 'Tạo mới',
+                                                        style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+
+                                              // NÚT IMPORT (chỉ hiện khi chưa có máy ảo)
+                                              InkWell(
+                                                onTap: (isCreatingPersonaAvd || isImportingPersonaAvd || isDeletingPersonaAvd)
+                                                    ? null
+                                                    : () async {
+                                                        String? chosenPath;
+                                                        try {
+                                                          const defaultBackupDir = '/home/yenai/Documents/Devices bk';
+                                                          final initialDir = Directory(defaultBackupDir).existsSync() ? defaultBackupDir : null;
+                                                          final res = await FilePicker.platform.pickFiles(
+                                                            dialogTitle: 'Chọn file backup máy ảo Android (.tar.gz, .zip)',
+                                                            initialDirectory: initialDir,
+                                                            type: FileType.custom,
+                                                            allowedExtensions: ['tar.gz', 'gz', 'tgz', 'zip', 'tar'],
+                                                          );
+                                                          if (res != null && res.files.single.path != null) {
+                                                            chosenPath = res.files.single.path;
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Không thể mở trình chọn file: $e');
+                                                          }
+                                                          return;
+                                                        }
+
+                                                        if (chosenPath == null) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.warning(dialogCtx, 'Chưa chọn file backup để import');
+                                                          }
+                                                          return;
+                                                        }
+
+                                                        setDialogState(() {
+                                                          isImportingPersonaAvd = true;
+                                                        });
+                                                        try {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.info(dialogCtx, 'Đang giải nén backup và nạp ứng dụng (Facebook, TikTok)...');
+                                                          }
+                                                          final importedAvd = await _socks5Service.importPersonaDeviceBackup(
+                                                            ip: persona.ip,
+                                                            personaName: persona.name,
+                                                            archivePath: chosenPath,
+                                                          );
+                                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
+                                                          final updated = currentP.copyWith(avdName: importedAvd);
+                                                          await _personaService.updatePersona(updated);
+                                                          final freshAvds = await _socks5Service.getAvailableAvds();
+                                                          if (mounted) {
+                                                            setState(() {
+                                                              _personas[persona.effectiveEntryKey] = updated;
+                                                              _availableAvds = freshAvds.toSet();
+                                                            });
+                                                          }
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              availableAvds = freshAvds;
+                                                              selectedAvd = importedAvd;
+                                                              hasPersonaAvd = true;
+                                                            });
+                                                            AppToast.success(dialogCtx, 'Import backup thành công! Đã nạp đầy đủ app cho $importedAvd');
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi import backup: $e');
+                                                          }
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              isImportingPersonaAvd = false;
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.primaryLight.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: AppColors.primaryLight.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isImportingPersonaAvd)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.primaryLight),
+                                                        )
+                                                      else
+                                                        const Icon(Icons.cloud_download_rounded, size: 12, color: AppColors.primaryLight),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isImportingPersonaAvd ? 'Đang nạp...' : 'Import',
+                                                        style: const TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ] else ...[
+                                              // NÚT BACKUP (Sao lưu máy ảo)
+                                              InkWell(
+                                                onTap: (selectedAvd == null || isBackingUpPersonaAvd || isRestoringPersonaAvd || isDeletingPersonaAvd)
+                                                    ? null
+                                                    : () async {
+                                                        setDialogState(() {
+                                                          isBackingUpPersonaAvd = true;
+                                                        });
+                                                        try {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.info(dialogCtx, 'Đang tiến hành sao lưu máy ảo $selectedAvd...');
+                                                          }
+                                                          final backupPath = await _socks5Service.backupPersonaDeviceAvd(
+                                                            avdName: selectedAvd!,
+                                                            onProgress: (msg) {
+                                                              if (dialogCtx.mounted) {
+                                                                AppToast.info(dialogCtx, msg);
+                                                              }
+                                                            },
+                                                          );
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.success(dialogCtx, 'Sao lưu thành công! File lưu tại: $backupPath');
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi sao lưu máy ảo: $e');
+                                                          }
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              isBackingUpPersonaAvd = false;
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.accent.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isBackingUpPersonaAvd)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accent),
+                                                        )
+                                                      else
+                                                        const Icon(Icons.backup_rounded, size: 12, color: AppColors.accent),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isBackingUpPersonaAvd ? 'Đang lưu...' : 'Backup',
+                                                        style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+
+                                              // NÚT RESTORE (Khôi phục / Nạp đè máy ảo từ backup)
+                                              InkWell(
+                                                onTap: (isBackingUpPersonaAvd || isRestoringPersonaAvd || isDeletingPersonaAvd)
+                                                    ? null
+                                                    : () async {
+                                                        String? chosenPath;
+                                                        try {
+                                                          const defaultBackupDir = '/home/yenai/Documents/Devices bk';
+                                                          final initialDir = Directory(defaultBackupDir).existsSync() ? defaultBackupDir : null;
+                                                          final res = await FilePicker.platform.pickFiles(
+                                                            dialogTitle: 'Chọn file backup để khôi phục máy ảo (.tar.gz, .zip)',
+                                                            initialDirectory: initialDir,
+                                                            type: FileType.custom,
+                                                            allowedExtensions: ['tar.gz', 'gz', 'tgz', 'zip', 'tar'],
+                                                          );
+                                                          if (res != null && res.files.single.path != null) {
+                                                            chosenPath = res.files.single.path;
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Không thể mở trình chọn file: $e');
+                                                          }
+                                                          return;
+                                                        }
+
+                                                        if (chosenPath == null) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.warning(dialogCtx, 'Chưa chọn file backup để khôi phục');
+                                                          }
+                                                          return;
+                                                        }
+
+                                                        if (!dialogCtx.mounted) return;
+                                                        final confirm = await showDialog<bool>(
+                                                          context: dialogCtx,
+                                                          builder: (c) => AlertDialog(
+                                                            backgroundColor: const Color(0xFF0C1322),
+                                                            title: const Text('Xác nhận khôi phục máy ảo', style: TextStyle(color: AppColors.warning, fontSize: 14)),
+                                                            content: Text('Khôi phục sẽ ghi đè toàn bộ dữ liệu hiện tại của máy ảo "$selectedAvd". Bạn có chắc chắn muốn tiếp tục không?', style: const TextStyle(color: AppColors.textWhite, fontSize: 12)),
+                                                            actions: [
+                                                              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Hủy', style: TextStyle(color: AppColors.textDim))),
+                                                              ElevatedButton(
+                                                                style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+                                                                onPressed: () => Navigator.pop(c, true),
+                                                                child: const Text('Đồng ý khôi phục', style: TextStyle(color: Colors.black)),
                                                               ),
-                                                            )
-                                                          else
-                                                            const Icon(
-                                                              Icons.bolt_rounded,
-                                                              size: 12,
-                                                              color: AppColors.primaryLight,
-                                                            ),
-                                                          const SizedBox(width: 3),
-                                                          Text(
-                                                            isActivatingLdPlayer ? 'Đang bật...' : 'Bật LDPlayer',
-                                                            style: const TextStyle(
-                                                              fontSize: 11,
-                                                              color: AppColors.primaryLight,
-                                                              fontWeight: FontWeight.bold,
-                                                            ),
+                                                            ],
                                                           ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                                const SizedBox(width: 8),
-                                                if (Socks5ProxyService.isExternalEmulatorId(selectedAvd)) ...[
-                                                  InkWell(
-                                                    onTap: () {
-                                                      final expectedPersonaAvd = generatePersonaAvdName(ip: persona.ip, personaName: persona.name);
-                                                      final legacyPersonaClone = 'Pixel_10_Pro_persona_${persona.ip.replaceAll(RegExp(r"[^a-zA-Z0-9_-]"), "_")}';
-                                                      setDialogState(() {
-                                                        selectedAvd = null;
-                                                        hasPersonaAvd = availableAvds.contains(expectedPersonaAvd) ||
-                                                            availableAvds.contains(legacyPersonaClone);
-                                                      });
-                                                    },
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    child: const Padding(
-                                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                      child: Row(
-                                                        mainAxisSize: MainAxisSize.min,
-                                                        children: [
-                                                          Icon(Icons.link_off_rounded, size: 12, color: AppColors.warning),
-                                                          SizedBox(width: 3),
-                                                          Text(
-                                                            'Bỏ gắn',
-                                                            style: TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.bold),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ] else if (!hasPersonaAvd) ...[
-                                                  // NÚT TẠO MỚI (chỉ hiện khi chưa có máy ảo)
-                                                  InkWell(
-                                                    onTap: (isCreatingPersonaAvd || isImportingPersonaAvd || isDeletingPersonaAvd)
-                                                        ? null
-                                                        : () async {
-                                                            setDialogState(() {
-                                                              isCreatingPersonaAvd = true;
-                                                            });
-                                                            try {
-                                                              AppToast.info(dialogCtx, 'Đang tạo máy ảo AVD độc lập cho IP ${persona.ip}...');
-                                                              final createdAvd = await _socks5Service.createPersonaDeviceAvd(
-                                                                ip: persona.ip,
-                                                                personaName: persona.name,
-                                                                baseAvd: selectedAvd ?? persona.avdName,
-                                                              );
-                                                              final currentP = _personas[persona.effectiveEntryKey] ?? persona;
-                                                              final updated = currentP.copyWith(avdName: createdAvd);
-                                                              await _personaService.updatePersona(updated);
-                                                              final freshAvds = await _socks5Service.getAvailableAvds();
-                                                              if (mounted) {
-                                                                setState(() {
-                                                                  _personas[persona.effectiveEntryKey] = updated;
-                                                                  _availableAvds = freshAvds.toSet();
-                                                                });
-                                                              }
-                                                              if (dialogCtx.mounted) {
-                                                                setDialogState(() {
-                                                                  availableAvds = freshAvds;
-                                                                  selectedAvd = createdAvd;
-                                                                  hasPersonaAvd = true;
-                                                                });
-                                                                AppToast.success(dialogCtx, 'Đã tạo máy ảo AVD thành công: $createdAvd');
-                                                              }
-                                                            } catch (e) {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.error(dialogCtx, 'Lỗi tạo máy ảo: $e');
-                                                              }
-                                                            } finally {
-                                                              if (dialogCtx.mounted) {
-                                                                setDialogState(() {
-                                                                  isCreatingPersonaAvd = false;
-                                                                });
-                                                              }
-                                                            }
-                                                          },
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                      child: Row(
-                                                        mainAxisSize: MainAxisSize.min,
-                                                        children: [
-                                                          if (isCreatingPersonaAvd)
-                                                            const SizedBox(
-                                                              width: 10,
-                                                              height: 10,
-                                                              child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accent),
-                                                            )
-                                                          else
-                                                            const Icon(Icons.add_circle_outline_rounded, size: 12, color: AppColors.accent),
-                                                          const SizedBox(width: 3),
-                                                          Text(
-                                                            isCreatingPersonaAvd ? 'Đang tạo...' : 'Tạo mới',
-                                                            style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.bold),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 8),
+                                                        );
 
-                                                  // NÚT IMPORT (chỉ hiện khi chưa có máy ảo)
-                                                  InkWell(
-                                                    onTap: (isCreatingPersonaAvd || isImportingPersonaAvd || isDeletingPersonaAvd)
-                                                        ? null
-                                                        : () async {
-                                                            String? chosenPath;
-                                                            try {
-                                                              const defaultBackupDir = '/home/yenai/Documents/Devices bk';
-                                                              final initialDir = Directory(defaultBackupDir).existsSync() ? defaultBackupDir : null;
-                                                              final res = await FilePicker.platform.pickFiles(
-                                                                dialogTitle: 'Chọn file backup máy ảo Android (.tar.gz, .zip)',
-                                                                initialDirectory: initialDir,
-                                                                type: FileType.custom,
-                                                                allowedExtensions: ['tar.gz', 'gz', 'tgz', 'zip', 'tar'],
-                                                              );
-                                                              if (res != null && res.files.single.path != null) {
-                                                                chosenPath = res.files.single.path;
-                                                              }
-                                                            } catch (e) {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.error(dialogCtx, 'Không thể mở trình chọn file: $e');
-                                                              }
-                                                              return;
-                                                            }
+                                                        if (confirm != true) return;
 
-                                                            if (chosenPath == null) {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.warning(dialogCtx, 'Chưa chọn file backup để import');
-                                                              }
-                                                              return;
-                                                            }
-
-                                                            setDialogState(() {
-                                                              isImportingPersonaAvd = true;
-                                                            });
-                                                            try {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.info(dialogCtx, 'Đang giải nén backup và nạp ứng dụng (Facebook, TikTok)...');
-                                                              }
-                                                              final importedAvd = await _socks5Service.importPersonaDeviceBackup(
-                                                                ip: persona.ip,
-                                                                personaName: persona.name,
-                                                                archivePath: chosenPath,
-                                                              );
-                                                              final currentP = _personas[persona.effectiveEntryKey] ?? persona;
-                                                              final updated = currentP.copyWith(avdName: importedAvd);
-                                                              await _personaService.updatePersona(updated);
-                                                              final freshAvds = await _socks5Service.getAvailableAvds();
-                                                              if (mounted) {
-                                                                setState(() {
-                                                                  _personas[persona.effectiveEntryKey] = updated;
-                                                                  _availableAvds = freshAvds.toSet();
-                                                                });
-                                                              }
-                                                              if (dialogCtx.mounted) {
-                                                                setDialogState(() {
-                                                                  availableAvds = freshAvds;
-                                                                  selectedAvd = importedAvd;
-                                                                  hasPersonaAvd = true;
-                                                                });
-                                                                AppToast.success(dialogCtx, 'Import backup thành công! Đã nạp đầy đủ app cho $importedAvd');
-                                                              }
-                                                            } catch (e) {
-                                                              if (dialogCtx.mounted) {
-                                                                AppToast.error(dialogCtx, 'Lỗi import backup: $e');
-                                                              }
-                                                            } finally {
-                                                              if (dialogCtx.mounted) {
-                                                                setDialogState(() {
-                                                                  isImportingPersonaAvd = false;
-                                                                });
-                                                              }
-                                                            }
-                                                          },
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                      child: Row(
-                                                        mainAxisSize: MainAxisSize.min,
-                                                        children: [
-                                                          if (isImportingPersonaAvd)
-                                                            const SizedBox(
-                                                              width: 10,
-                                                              height: 10,
-                                                              child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.primaryLight),
-                                                            )
-                                                          else
-                                                            const Icon(Icons.cloud_download_rounded, size: 12, color: AppColors.primaryLight),
-                                                          const SizedBox(width: 3),
-                                                          Text(
-                                                            isImportingPersonaAvd ? 'Đang nạp...' : 'Import',
-                                                            style: const TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ] else ...[
-                                                // NÚT BACKUP (Sao lưu máy ảo)
-                                                InkWell(
-                                                  onTap: (selectedAvd == null || isBackingUpPersonaAvd || isRestoringPersonaAvd || isDeletingPersonaAvd)
-                                                      ? null
-                                                      : () async {
-                                                          setDialogState(() {
-                                                            isBackingUpPersonaAvd = true;
-                                                          });
-                                                          try {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.info(dialogCtx, 'Đang tiến hành sao lưu máy ảo $selectedAvd...');
-                                                            }
-                                                            final backupPath = await _socks5Service.backupPersonaDeviceAvd(
-                                                              avdName: selectedAvd!,
-                                                              onProgress: (msg) {
-                                                                if (dialogCtx.mounted) {
-                                                                  AppToast.info(dialogCtx, msg);
-                                                                }
-                                                              },
-                                                            );
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.success(dialogCtx, 'Sao lưu thành công! File lưu tại: $backupPath');
-                                                            }
-                                                          } catch (e) {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.error(dialogCtx, 'Lỗi sao lưu máy ảo: $e');
-                                                            }
-                                                          } finally {
-                                                            if (dialogCtx.mounted) {
-                                                              setDialogState(() {
-                                                                isBackingUpPersonaAvd = false;
-                                                              });
-                                                            }
+                                                        setDialogState(() {
+                                                          isRestoringPersonaAvd = true;
+                                                        });
+                                                        try {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.info(dialogCtx, 'Đang khôi phục dữ liệu máy ảo từ backup...');
                                                           }
-                                                        },
-                                                  borderRadius: BorderRadius.circular(4),
-                                                  child: Padding(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                    child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        if (isBackingUpPersonaAvd)
-                                                          const SizedBox(
-                                                            width: 10,
-                                                            height: 10,
-                                                            child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.accent),
-                                                          )
-                                                        else
-                                                          const Icon(Icons.backup_rounded, size: 12, color: AppColors.accent),
-                                                        const SizedBox(width: 3),
-                                                        Text(
-                                                          isBackingUpPersonaAvd ? 'Đang lưu...' : 'Backup',
-                                                          style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.bold),
-                                                        ),
-                                                      ],
-                                                    ),
+                                                          final importedAvd = await _socks5Service.importPersonaDeviceBackup(
+                                                            ip: persona.ip,
+                                                            personaName: persona.name,
+                                                            archivePath: chosenPath,
+                                                          );
+                                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
+                                                          final updated = currentP.copyWith(avdName: importedAvd);
+                                                          await _personaService.updatePersona(updated);
+                                                          final freshAvds = await _socks5Service.getAvailableAvds();
+                                                          if (mounted) {
+                                                            setState(() {
+                                                              _personas[persona.effectiveEntryKey] = updated;
+                                                              _availableAvds = freshAvds.toSet();
+                                                            });
+                                                          }
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              availableAvds = freshAvds;
+                                                              selectedAvd = importedAvd;
+                                                              hasPersonaAvd = true;
+                                                            });
+                                                            AppToast.success(dialogCtx, 'Khôi phục máy ảo thành công: $importedAvd');
+                                                          }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi khôi phục máy ảo: $e');
+                                                          }
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              isRestoringPersonaAvd = false;
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.primaryLight.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: AppColors.primaryLight.withValues(alpha: 0.35), width: 0.8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isRestoringPersonaAvd)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.primaryLight),
+                                                        )
+                                                      else
+                                                        const Icon(Icons.settings_backup_restore_rounded, size: 12, color: AppColors.primaryLight),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isRestoringPersonaAvd ? 'Đang khôi phục...' : 'Restore',
+                                                        style: const TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ],
                                                   ),
                                                 ),
-                                                const SizedBox(width: 8),
+                                              ),
 
-                                                // NÚT RESTORE (Khôi phục / Nạp đè máy ảo từ backup)
-                                                InkWell(
-                                                  onTap: (isBackingUpPersonaAvd || isRestoringPersonaAvd || isDeletingPersonaAvd)
-                                                      ? null
-                                                      : () async {
-                                                          String? chosenPath;
-                                                          try {
-                                                            const defaultBackupDir = '/home/yenai/Documents/Devices bk';
-                                                            final initialDir = Directory(defaultBackupDir).existsSync() ? defaultBackupDir : null;
-                                                            final res = await FilePicker.platform.pickFiles(
-                                                              dialogTitle: 'Chọn file backup để khôi phục máy ảo (.tar.gz, .zip)',
-                                                              initialDirectory: initialDir,
-                                                              type: FileType.custom,
-                                                              allowedExtensions: ['tar.gz', 'gz', 'tgz', 'zip', 'tar'],
-                                                            );
-                                                            if (res != null && res.files.single.path != null) {
-                                                              chosenPath = res.files.single.path;
-                                                            }
-                                                          } catch (e) {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.error(dialogCtx, 'Không thể mở trình chọn file: $e');
-                                                            }
-                                                            return;
+                                              // NÚT XÓA
+                                              InkWell(
+                                                onTap: (selectedAvd == null || isDeletingPersonaAvd)
+                                                    ? null
+                                                    : () async {
+                                                        final avdToDelete = selectedAvd!;
+                                                        final confirm = await showDialog<bool>(
+                                                          context: dialogCtx,
+                                                          builder: (c) => AlertDialog(
+                                                            backgroundColor: const Color(0xFF0C1322),
+                                                            title: const Text('Xác nhận xóa máy ảo', style: TextStyle(color: AppColors.danger, fontSize: 14)),
+                                                            content: Text('Bạn có chắc chắn muốn xóa máy ảo "$avdToDelete" khỏi ổ cứng không? Thao tác này không thể hoàn tác.', style: const TextStyle(color: AppColors.textWhite, fontSize: 12)),
+                                                            actions: [
+                                                              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Hủy', style: TextStyle(color: AppColors.textDim))),
+                                                              ElevatedButton(
+                                                                style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                                                                onPressed: () => Navigator.pop(c, true),
+                                                                child: const Text('Xóa vĩnh viễn', style: TextStyle(color: Colors.white)),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        );
+
+                                                        if (confirm != true) return;
+
+                                                        setDialogState(() {
+                                                          isDeletingPersonaAvd = true;
+                                                        });
+                                                        try {
+                                                          await _socks5Service.deleteAvd(avdToDelete, ip: persona.ip);
+                                                          final freshAvds = await _socks5Service.getAvailableAvds();
+                                                          final currentP = _personas[persona.effectiveEntryKey] ?? persona;
+                                                          final updated = currentP.copyWith(avdName: null);
+                                                          await _personaService.updatePersona(updated);
+
+                                                          if (mounted) {
+                                                            setState(() {
+                                                              _personas[persona.effectiveEntryKey] = updated;
+                                                              _availableAvds = freshAvds.toSet();
+                                                            });
                                                           }
 
-                                                          if (chosenPath == null) {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.warning(dialogCtx, 'Chưa chọn file backup để khôi phục');
-                                                            }
-                                                            return;
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              availableAvds = freshAvds;
+                                                              selectedAvd = null;
+                                                              hasPersonaAvd = false;
+                                                            });
+                                                            AppToast.success(dialogCtx, 'Đã xóa máy ảo $avdToDelete thành công');
                                                           }
-
-                                                          if (!dialogCtx.mounted) return;
-                                                          final confirm = await showDialog<bool>(
-                                                            context: dialogCtx,
-                                                            builder: (c) => AlertDialog(
-                                                              backgroundColor: const Color(0xFF0C1322),
-                                                              title: const Text('Xác nhận khôi phục máy ảo', style: TextStyle(color: AppColors.warning, fontSize: 14)),
-                                                              content: Text('Khôi phục sẽ ghi đè toàn bộ dữ liệu hiện tại của máy ảo "$selectedAvd". Bạn có chắc chắn muốn tiếp tục không?', style: const TextStyle(color: AppColors.textWhite, fontSize: 12)),
-                                                              actions: [
-                                                                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Hủy', style: TextStyle(color: AppColors.textDim))),
-                                                                ElevatedButton(
-                                                                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
-                                                                  onPressed: () => Navigator.pop(c, true),
-                                                                  child: const Text('Đồng ý khôi phục', style: TextStyle(color: Colors.black)),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                          );
-
-                                                          if (confirm != true) return;
-
-                                                          setDialogState(() {
-                                                            isRestoringPersonaAvd = true;
-                                                          });
-                                                          try {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.info(dialogCtx, 'Đang khôi phục dữ liệu máy ảo từ backup...');
-                                                            }
-                                                            final importedAvd = await _socks5Service.importPersonaDeviceBackup(
-                                                              ip: persona.ip,
-                                                              personaName: persona.name,
-                                                              archivePath: chosenPath,
-                                                            );
-                                                            final currentP = _personas[persona.effectiveEntryKey] ?? persona;
-                                                            final updated = currentP.copyWith(avdName: importedAvd);
-                                                            await _personaService.updatePersona(updated);
-                                                            final freshAvds = await _socks5Service.getAvailableAvds();
-                                                            if (mounted) {
-                                                              setState(() {
-                                                                _personas[persona.effectiveEntryKey] = updated;
-                                                                _availableAvds = freshAvds.toSet();
-                                                              });
-                                                            }
-                                                            if (dialogCtx.mounted) {
-                                                              setDialogState(() {
-                                                                availableAvds = freshAvds;
-                                                                selectedAvd = importedAvd;
-                                                                hasPersonaAvd = true;
-                                                              });
-                                                              AppToast.success(dialogCtx, 'Khôi phục máy ảo thành công: $importedAvd');
-                                                            }
-                                                          } catch (e) {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.error(dialogCtx, 'Lỗi khôi phục máy ảo: $e');
-                                                            }
-                                                          } finally {
-                                                            if (dialogCtx.mounted) {
-                                                              setDialogState(() {
-                                                                isRestoringPersonaAvd = false;
-                                                              });
-                                                            }
+                                                        } catch (e) {
+                                                          if (dialogCtx.mounted) {
+                                                            AppToast.error(dialogCtx, 'Lỗi khi xóa máy ảo: $e');
                                                           }
-                                                        },
-                                                  borderRadius: BorderRadius.circular(4),
-                                                  child: Padding(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                    child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        if (isRestoringPersonaAvd)
-                                                          const SizedBox(
-                                                            width: 10,
-                                                            height: 10,
-                                                            child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.primaryLight),
-                                                          )
-                                                        else
-                                                          const Icon(Icons.settings_backup_restore_rounded, size: 12, color: AppColors.primaryLight),
-                                                        const SizedBox(width: 3),
-                                                        Text(
-                                                          isRestoringPersonaAvd ? 'Đang khôi phục...' : 'Restore',
-                                                          style: const TextStyle(fontSize: 11, color: AppColors.primaryLight, fontWeight: FontWeight.bold),
-                                                        ),
-                                                      ],
+                                                        } finally {
+                                                          if (dialogCtx.mounted) {
+                                                            setDialogState(() {
+                                                              isDeletingPersonaAvd = false;
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                borderRadius: BorderRadius.circular(4),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                                  decoration: BoxDecoration(
+                                                    color: (selectedAvd == null ? AppColors.textDim : AppColors.danger).withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(
+                                                      color: (selectedAvd == null ? AppColors.textDim : AppColors.danger).withValues(alpha: 0.35),
+                                                      width: 0.8,
                                                     ),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (isDeletingPersonaAvd)
+                                                        const SizedBox(
+                                                          width: 10,
+                                                          height: 10,
+                                                          child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.danger),
+                                                        )
+                                                      else
+                                                        Icon(
+                                                          Icons.delete_outline_rounded,
+                                                          size: 12,
+                                                          color: selectedAvd == null ? AppColors.textDim.withValues(alpha: 0.4) : AppColors.danger,
+                                                        ),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        isDeletingPersonaAvd ? 'Đang xóa...' : 'Xóa',
+                                                        style: TextStyle(
+                                                          fontSize: 11,
+                                                          color: selectedAvd == null ? AppColors.textDim.withValues(alpha: 0.4) : AppColors.danger,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ],
                                                   ),
                                                 ),
-                                                const SizedBox(width: 8),
-                                                // NÚT XÓA
-                                                InkWell(
-                                                  onTap: (selectedAvd == null || isDeletingPersonaAvd)
-                                                      ? null
-                                                      : () async {
-                                                          final avdToDelete = selectedAvd!;
-                                                          final confirm = await showDialog<bool>(
-                                                            context: dialogCtx,
-                                                            builder: (c) => AlertDialog(
-                                                              backgroundColor: const Color(0xFF0C1322),
-                                                              title: const Text('Xác nhận xóa máy ảo', style: TextStyle(color: AppColors.danger, fontSize: 14)),
-                                                              content: Text('Bạn có chắc chắn muốn xóa máy ảo "$avdToDelete" khỏi ổ cứng không? Thao tác này không thể hoàn tác.', style: const TextStyle(color: AppColors.textWhite, fontSize: 12)),
-                                                              actions: [
-                                                                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Hủy', style: TextStyle(color: AppColors.textDim))),
-                                                                ElevatedButton(
-                                                                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
-                                                                  onPressed: () => Navigator.pop(c, true),
-                                                                  child: const Text('Xóa vĩnh viễn', style: TextStyle(color: Colors.white)),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                          );
-
-                                                          if (confirm != true) return;
-
-                                                          setDialogState(() {
-                                                            isDeletingPersonaAvd = true;
-                                                          });
-                                                          try {
-                                                            await _socks5Service.deleteAvd(avdToDelete, ip: persona.ip);
-                                                            final freshAvds = await _socks5Service.getAvailableAvds();
-                                                            final currentP = _personas[persona.effectiveEntryKey] ?? persona;
-                                                            final updated = currentP.copyWith(avdName: null);
-                                                            await _personaService.updatePersona(updated);
-
-                                                            if (mounted) {
-                                                              setState(() {
-                                                                _personas[persona.effectiveEntryKey] = updated;
-                                                                _availableAvds = freshAvds.toSet();
-                                                              });
-                                                            }
-
-                                                            if (dialogCtx.mounted) {
-                                                              setDialogState(() {
-                                                                availableAvds = freshAvds;
-                                                                selectedAvd = null;
-                                                                hasPersonaAvd = false;
-                                                              });
-                                                              AppToast.success(dialogCtx, 'Đã xóa máy ảo $avdToDelete thành công');
-                                                            }
-                                                          } catch (e) {
-                                                            if (dialogCtx.mounted) {
-                                                              AppToast.error(dialogCtx, 'Lỗi khi xóa máy ảo: $e');
-                                                            }
-                                                          } finally {
-                                                            if (dialogCtx.mounted) {
-                                                              setDialogState(() {
-                                                                isDeletingPersonaAvd = false;
-                                                              });
-                                                            }
-                                                          }
-                                                        },
-                                                  borderRadius: BorderRadius.circular(4),
-                                                  child: Padding(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                    child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        if (isDeletingPersonaAvd)
-                                                          const SizedBox(
-                                                            width: 10,
-                                                            height: 10,
-                                                            child: CircularProgressIndicator(strokeWidth: 1.2, color: AppColors.danger),
-                                                          )
-                                                        else
-                                                          Icon(
-                                                            Icons.delete_outline_rounded,
-                                                            size: 12,
-                                                            color: selectedAvd == null ? AppColors.textDim.withValues(alpha: 0.4) : AppColors.danger,
-                                                          ),
-                                                        const SizedBox(width: 3),
-                                                        Text(
-                                                          isDeletingPersonaAvd ? 'Đang xóa...' : 'Xóa',
-                                                          style: TextStyle(
-                                                            fontSize: 11,
-                                                            color: selectedAvd == null ? AppColors.textDim.withValues(alpha: 0.4) : AppColors.danger,
-                                                            fontWeight: FontWeight.bold,
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                 ),
-                                                ],
-                                              ],
-                                            ),
+                                              ),
+                                            ],
                                           ],
                                         ),
                                         const SizedBox(height: 6),
@@ -2044,16 +2094,22 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                                     children: [
                                       const Icon(Icons.web_asset_rounded, size: 14, color: AppColors.accent),
                                       const SizedBox(width: 6),
-                                      const Text(
-                                        'Profile trình duyệt hệ thống',
-                                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                                      const Expanded(
+                                        child: Text(
+                                          'Profile trình duyệt hệ thống',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                                        ),
                                       ),
-                                      const Spacer(),
-                                      Text(
-                                        isLoadingBrowserProfiles
-                                            ? 'Đang dò...'
-                                            : ((_detectedBrowserName?.isNotEmpty ?? false) ? _detectedBrowserName! : 'Không rõ'),
-                                        style: const TextStyle(fontSize: 10.5, color: AppColors.textDim),
+                                      const SizedBox(width: 8),
+                                      Flexible(
+                                        child: Text(
+                                          isLoadingBrowserProfiles
+                                              ? 'Đang dò...'
+                                              : ((_detectedBrowserName?.isNotEmpty ?? false) ? _detectedBrowserName! : 'Không rõ'),
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 10.5, color: AppColors.textDim),
+                                        ),
                                       ),
                                     ],
                                   ),

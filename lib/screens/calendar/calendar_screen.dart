@@ -107,18 +107,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return '$dayName, $formattedDate';
   }
 
-  void _showCreateTaskDialog(BuildContext context, {DateTime? initialDate}) {
+  void _showCreateTaskDialog(BuildContext context, {DateTime? initialDate, ScheduleTaskModel? editingTask}) {
     final scheduleProvider = context.read<ScheduleProvider>();
-    final targetDate = initialDate ?? scheduleProvider.selectedDate;
+    final isEdit = editingTask != null;
+    final targetDate = editingTask?.scheduledTime ?? initialDate ?? scheduleProvider.selectedDate;
 
-    final titleCtrl = TextEditingController();
-    final urlCtrl = TextEditingController();
-    final commentCtrl = TextEditingController();
-    String taskType = 'like';
-    String executionMode = 'browser'; // 'browser' | 'device'
-    TimeOfDay selectedTime = TimeOfDay.now();
-    DateTime chosenDate = targetDate;
-    final selectedIps = <String>{};
+    final titleCtrl = TextEditingController(text: editingTask?.title ?? '');
+    final urlCtrl = TextEditingController(text: editingTask?.targetUrl ?? '');
+    final commentCtrl = TextEditingController(text: editingTask?.commentContent ?? '');
+    String taskType = editingTask?.taskType ?? 'like';
+    final rawExecutionMode = editingTask?.executionMode.trim() ?? '';
+    String executionMode = rawExecutionMode.isNotEmpty ? rawExecutionMode : 'device'; // 'device' | 'browser'
+    TimeOfDay selectedTime = editingTask != null
+        ? TimeOfDay(hour: editingTask.scheduledTime.hour, minute: editingTask.scheduledTime.minute)
+        : (initialDate != null && (initialDate.hour != 0 || initialDate.minute != 0)
+            ? TimeOfDay(hour: initialDate.hour, minute: initialDate.minute)
+            : TimeOfDay.now());
+    DateTime chosenDate = DateTime(targetDate.year, targetDate.month, targetDate.day);
+    final selectedIps = <String>{if (editingTask != null) ...editingTask.personaIps};
+    bool resetProgressOnSave = false;
     int personaCurrentPage = 1;
     const int personaPageSize = 10;
     final searchPersonaCtrl = TextEditingController();
@@ -139,11 +146,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
           return TaduDialog(
             minWidth: 560,
             maxWidth: 680,
-            title: const Row(
+            title: Row(
               children: [
-                Icon(Icons.add_task_rounded, color: AppColors.primaryLight, size: 22),
-                SizedBox(width: 8),
-                Text('Lên Kế Hoạch Tác Vụ Cho Nhân Vật'),
+                Icon(isEdit ? Icons.edit_calendar_rounded : Icons.add_task_rounded, color: AppColors.primaryLight, size: 22),
+                const SizedBox(width: 8),
+                Text(isEdit ? 'Chỉnh Sửa Kế Hoạch Tác Vụ' : 'Lên Kế Hoạch Tác Vụ Cho Nhân Vật'),
               ],
             ),
             content: Column(
@@ -170,10 +177,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     children: [
                       Expanded(
                         child: _buildExecutionModeRadio(
-                          'browser',
-                          'Mở trình duyệt',
-                          Icons.open_in_browser_rounded,
-                          'Chrome profile riêng theo IP',
+                          'device',
+                          'Mở thiết bị',
+                          Icons.phone_android_rounded,
+                          'Máy ảo AVD hoặc ngoại vi WiFi',
                           executionMode,
                           (v) => setDialogState(() => executionMode = v),
                         ),
@@ -181,10 +188,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: _buildExecutionModeRadio(
-                          'device',
-                          'Mở thiết bị',
-                          Icons.phone_android_rounded,
-                          'Máy ảo AVD hoặc ngoại vi WiFi',
+                          'browser',
+                          'Mở trình duyệt',
+                          Icons.open_in_browser_rounded,
+                          'Chrome profile riêng theo IP',
                           executionMode,
                           (v) => setDialogState(() => executionMode = v),
                         ),
@@ -221,16 +228,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Nội dung comment nếu chọn comment
-                  if (taskType == 'comment') ...[
-                    const Text('Nội dung comment (hoặc gợi ý cho AI tự sinh):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite)),
+                  // Nội dung comment / bài viết nếu chọn comment hoặc post
+                  if (taskType == 'comment' || taskType == 'post') ...[
+                    Text(
+                      taskType == 'post'
+                          ? 'Nội dung bài viết / caption (tùy chọn):'
+                          : 'Nội dung comment (hoặc gợi ý cho AI tự sinh):',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textWhite),
+                    ),
                     const SizedBox(height: 6),
                     TextField(
                       controller: commentCtrl,
                       maxLines: 2,
                       style: const TextStyle(fontSize: 13),
-                      decoration: const InputDecoration(
-                        hintText: 'Nhập nội dung mẫu hoặc chỉ định phong cách bình luận...',
+                      decoration: InputDecoration(
+                        hintText: taskType == 'post'
+                            ? 'Nhập nội dung bài viết hoặc mô tả video...'
+                            : 'Nhập nội dung mẫu hoặc chỉ định phong cách bình luận...',
                         isDense: true,
                       ),
                     ),
@@ -768,6 +782,39 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       );
                     },
                   ),
+                  if (isEdit && editingTask.status != 'pending') ...[
+                    const SizedBox(height: 12),
+                    InkWell(
+                      onTap: () => setDialogState(() => resetProgressOnSave = !resetProgressOnSave),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.inputBg,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: resetProgressOnSave ? AppColors.primaryLight : AppColors.borderDark,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              resetProgressOnSave ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                              size: 18,
+                              color: resetProgressOnSave ? AppColors.primaryLight : AppColors.textDim,
+                            ),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'Đặt lại trạng thái về "Đang chờ" và xóa tiến độ cũ để tự chạy lại toàn bộ theo giờ mới',
+                                style: TextStyle(fontSize: 11.5, color: AppColors.textBody),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             actions: [
@@ -800,15 +847,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     selectedTime.minute,
                   );
 
-                  final ok = await scheduleProvider.createTask(
-                    title: title,
-                    taskType: taskType,
-                    executionMode: executionMode,
-                    targetUrl: url,
-                    commentContent: commentCtrl.text.trim(),
-                    personaIps: selectedIps.toList(),
-                    scheduledTime: scheduledDateTime,
-                  );
+                  final ok = isEdit
+                      ? await scheduleProvider.updateTask(
+                          existing: editingTask,
+                          title: title,
+                          taskType: taskType,
+                          executionMode: executionMode,
+                          targetUrl: url,
+                          commentContent: commentCtrl.text.trim(),
+                          personaIps: selectedIps.toList(),
+                          scheduledTime: scheduledDateTime,
+                          resetToPending: resetProgressOnSave,
+                        )
+                      : await scheduleProvider.createTask(
+                          title: title,
+                          taskType: taskType,
+                          executionMode: executionMode,
+                          targetUrl: url,
+                          commentContent: commentCtrl.text.trim(),
+                          personaIps: selectedIps.toList(),
+                          scheduledTime: scheduledDateTime,
+                        );
 
                   if (dialogCtx.mounted) {
                     Navigator.pop(dialogCtx);
@@ -817,14 +876,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         _currentMonth = DateTime(chosenDate.year, chosenDate.month, 1);
                       });
                       scheduleProvider.setSelectedDate(DateTime(chosenDate.year, chosenDate.month, chosenDate.day));
-                      AppToast.success(context, 'Đã lên lịch thành công cho ${selectedIps.length} nhân vật');
+                      AppToast.success(
+                        context,
+                        isEdit
+                            ? 'Đã cập nhật kế hoạch "$title" thành công'
+                            : 'Đã lên lịch thành công cho ${selectedIps.length} nhân vật',
+                      );
                     } else {
-                      AppToast.error(context, 'Không thể lưu lịch trình');
+                      AppToast.error(context, isEdit ? 'Không thể cập nhật kế hoạch' : 'Không thể lưu lịch trình');
                     }
                   }
                 },
                 icon: const Icon(Icons.check_rounded, size: 16),
-                label: const Text('Lưu Kế Hoạch', style: TextStyle(fontWeight: FontWeight.bold)),
+                label: Text(isEdit ? 'Lưu Thay Đổi' : 'Lưu Kế Hoạch', style: const TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
           );
@@ -1023,7 +1087,54 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
+
+            // Banner cảnh báo & khôi phục nhanh khi có tác vụ hẹn giờ bị lỗi / hoàn thành 1 phần / đang chờ thử lại
+            if (scheduleProvider.attentionTasks.isNotEmpty) ...[
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppColors.warning.withValues(alpha: 0.45)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, size: 18, color: AppColors.warning),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Có ${scheduleProvider.attentionTasks.length} tác vụ hẹn giờ chưa hoàn thành 100% (lỗi / hoàn thành 1 phần / đang chờ tự thử lại). '
+                        'Hệ thống đã giữ checkpoint các nhân vật đã xong để chạy tiếp phần còn lại.',
+                        style: const TextStyle(fontSize: 12, color: AppColors.textWhite),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        AppToast.info(context, 'Đang chạy tiếp phần chưa hoàn thành của các tác vụ lỗi...');
+                        final count = await scheduleProvider.retryAllFailedOrPartialTasks(
+                          defaultServer: serverProvider.selectedServer,
+                        );
+                        if (context.mounted) {
+                          AppToast.info(context, 'Đã xử lý chạy tiếp $count tác vụ.');
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: const Color(0xFF070B14),
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                      ),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                      label: const Text('Chạy tiếp phần lỗi', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
 
             if (_viewMode == 'month') ...[
               // Bảng ngày trong tuần (T2 - CN)
@@ -1165,7 +1276,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
         }).toList();
 
         return InkWell(
-          onTap: () => provider.setSelectedDate(cellDate),
+          onTap: () {
+            provider.setSelectedDate(cellDate);
+            _showDayTasksDialog(context, cellDate);
+          },
           borderRadius: BorderRadius.circular(4),
           child: Container(
             padding: const EdgeInsets.all(6),
@@ -1259,6 +1373,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         color: AppColors.textWhite.withValues(alpha: 0.9),
                                         fontWeight: FontWeight.w500,
                                       ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 3),
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: _statusDotColor(t.status),
                                     ),
                                   ),
                                 ],
@@ -1527,7 +1650,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
                   return Expanded(
                     child: InkWell(
-                      onTap: () => provider.setSelectedDate(day),
+                      onTap: () {
+                        provider.setSelectedDate(day);
+                        _showDayTasksDialog(context, day);
+                      },
                       borderRadius: BorderRadius.circular(4),
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1703,20 +1829,360 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  void _showTaskDetailDialog(BuildContext context, ScheduleTaskModel task) {
-    final scheduleProvider = context.read<ScheduleProvider>();
+  Color _statusDotColor(String status) {
+    switch (status) {
+      case 'completed':
+        return AppColors.accent;
+      case 'running':
+        return AppColors.primaryLight;
+      case 'retrying':
+      case 'partial':
+        return AppColors.warning;
+      case 'failed':
+        return AppColors.danger;
+      case 'cancelled':
+        return AppColors.textDim;
+      default:
+        return AppColors.textMuted;
+    }
+  }
+
+  void _showTaskOutcomeToast(BuildContext context, ScheduleTaskModel? result) {
+    if (!context.mounted || result == null) return;
+    if (result.status == 'completed') {
+      AppToast.success(context, 'Tác vụ đã hoàn tất 100% (${result.completedIps.length}/${result.personaIps.length} nhân vật)');
+    } else if (result.status == 'retrying') {
+      AppToast.warning(context, 'Còn ${result.remainingIps.length} nhân vật lỗi. Hệ thống đã hẹn tự thử lại.');
+    } else if (result.status == 'partial') {
+      AppToast.warning(context, 'Hoàn thành 1 phần (${result.completedIps.length}/${result.personaIps.length}). Đã gửi cảnh báo.');
+    } else if (result.status == 'failed') {
+      AppToast.error(context, 'Tác vụ thất bại. Đã gửi cảnh báo.');
+    }
+  }
+
+  /// Bật dialog chi tiết danh sách công việc trong một ngày cụ thể để xem, tinh chỉnh, chạy tiếp, chạy lại hoặc xóa
+  void _showDayTasksDialog(BuildContext context, DateTime date) {
+    final serverProvider = context.read<ServerProvider>();
+    final dayLabel = _formatFullDateVN(date);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Consumer<ScheduleProvider>(
+        builder: (dialogCtx, scheduleProvider, _) {
+          final dayTasks = scheduleProvider.tasks.where((t) {
+            return t.scheduledTime.year == date.year &&
+                t.scheduledTime.month == date.month &&
+                t.scheduledTime.day == date.day;
+          }).toList()
+            ..sort((a, b) => a.scheduledTime.compareTo(b.scheduledTime));
+
+          final attentionCount = dayTasks.where((t) => t.needsAttention).length;
+
+          return TaduDialog(
+            minWidth: 620,
+            maxWidth: 760,
+            title: Row(
+              children: [
+                const Icon(Icons.event_note_rounded, color: AppColors.primaryLight, size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Công Việc Ngày $dayLabel (${dayTasks.length})',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            content: dayTasks.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 28),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.event_available_rounded,
+                            size: 38,
+                            color: AppColors.textDim.withValues(alpha: 0.6),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Chưa có công việc nào được lên lịch cho $dayLabel.',
+                            style: const TextStyle(fontSize: 13, color: AppColors.textMuted),
+                          ),
+                          const SizedBox(height: 14),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              Navigator.pop(dialogCtx);
+                              _showCreateTaskDialog(context, initialDate: date);
+                            },
+                            icon: const Icon(Icons.add_rounded, size: 16),
+                            label: const Text('Tạo Kế Hoạch Cho Ngày Này', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (attentionCount > 0) ...[
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: AppColors.warning.withValues(alpha: 0.4)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, size: 16, color: AppColors.warning),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Có $attentionCount công việc chưa xong 100% trong ngày này.',
+                                  style: const TextStyle(fontSize: 11.5, color: AppColors.textWhite),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton.icon(
+                                onPressed: () async {
+                                  AppToast.info(context, 'Đang chạy tiếp phần lỗi trong ngày $dayLabel...');
+                                  for (final t in dayTasks.where((e) => e.needsAttention)) {
+                                    await scheduleProvider.resumeTask(t, defaultServer: serverProvider.selectedServer);
+                                  }
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: const Color(0xFF070B14),
+                                  elevation: 0,
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                ),
+                                icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                                label: const Text('Chạy tiếp tất cả lỗi', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      ...dayTasks.map((t) => _buildDayDialogTaskItem(context, dialogCtx, t, scheduleProvider, serverProvider)),
+                    ],
+                  ),
+            leadingActions: [
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(dialogCtx);
+                  _showCreateTaskDialog(context, initialDate: date);
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.primaryLight,
+                  backgroundColor: AppColors.cardBg,
+                  side: BorderSide(color: AppColors.primaryLight.withValues(alpha: 0.45)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                ),
+                icon: const Icon(Icons.add_rounded, size: 15),
+                label: const Text('Thêm công việc', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              ),
+            ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Đóng', style: TextStyle(color: AppColors.textMuted)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildDayDialogTaskItem(
+    BuildContext rootContext,
+    BuildContext dialogCtx,
+    ScheduleTaskModel task,
+    ScheduleProvider scheduleProvider,
+    ServerProvider serverProvider,
+  ) {
+    final isRunning = task.status == 'running';
+    final isQueued = scheduleProvider.isTaskQueuedForResource(task.id);
+    final isRetrying = task.status == 'retrying';
+    final isCompleted = task.status == 'completed';
+    final hasResumeWork =
+        (task.status == 'partial' || task.status == 'failed' || task.status == 'retrying' || task.status == 'cancelled') &&
+            task.hasCheckpointProgress;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.sidebarBg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: isRunning
+              ? AppColors.primaryLight
+              : (task.needsAttention ? AppColors.warning.withValues(alpha: 0.5) : AppColors.borderDark),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildTaskCard(dialogCtx, task),
+          const SizedBox(height: 12),
+          const Divider(height: 1, color: AppColors.borderDark),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                onPressed: isRunning
+                    ? null
+                    : () => _showCreateTaskDialog(rootContext, editingTask: task),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textWhite,
+                  backgroundColor: AppColors.cardBg,
+                  side: const BorderSide(color: AppColors.borderLight),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                ),
+                icon: Icon(
+                  Icons.edit_outlined,
+                  size: 14,
+                  color: isRunning ? AppColors.textDim : AppColors.primaryLight,
+                ),
+                label: const Text('Chỉnh sửa', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              if (hasResumeWork && !isRunning)
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    AppToast.info(rootContext, 'Đang chạy tiếp ${task.remainingIps.length} nhân vật chưa xong...');
+                    final res = await scheduleProvider.resumeTask(
+                      task,
+                      defaultServer: serverProvider.selectedServer,
+                    );
+                    if (rootContext.mounted) {
+                      _showTaskOutcomeToast(rootContext, res);
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: const Color(0xFF070B14),
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                  label: Text(
+                    'Chạy tiếp (${task.remainingIps.length} lỗi)',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ElevatedButton.icon(
+                onPressed: isRunning
+                    ? null
+                    : () async {
+                        AppToast.info(rootContext, 'Bắt đầu thực thi "${task.title}"...');
+                        final res = (isCompleted || hasResumeWork)
+                            ? await scheduleProvider.restartTaskFromScratch(
+                                task,
+                                defaultServer: serverProvider.selectedServer,
+                              )
+                            : await scheduleProvider.executeTaskNow(
+                                task,
+                                defaultServer: serverProvider.selectedServer,
+                              );
+                        if (rootContext.mounted) {
+                          _showTaskOutcomeToast(rootContext, res);
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: (isCompleted || hasResumeWork) ? AppColors.cardBg : AppColors.primary,
+                  foregroundColor: (isCompleted || hasResumeWork) ? AppColors.textWhite : const Color(0xFF070B14),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    side: (isCompleted || hasResumeWork) ? const BorderSide(color: AppColors.borderLight) : BorderSide.none,
+                  ),
+                ),
+                icon: isRunning
+                    ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                    : Icon((isCompleted || hasResumeWork) ? Icons.replay_rounded : Icons.play_arrow_rounded, size: 15),
+                label: Text(
+                  isRunning
+                      ? (isQueued ? 'Đang xếp hàng...' : 'Đang chạy...')
+                      : ((isCompleted || hasResumeWork) ? 'Chạy lại toàn bộ' : 'Chạy ngay'),
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (isRunning || isRetrying)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await scheduleProvider.cancelOrResetStuckTask(task, resetToPending: false);
+                    if (rootContext.mounted) {
+                      AppToast.warning(rootContext, 'Đã dừng / gỡ kẹt "${task.title}".');
+                    }
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.danger,
+                    backgroundColor: AppColors.danger.withValues(alpha: 0.08),
+                    side: BorderSide(color: AppColors.danger.withValues(alpha: 0.45)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  icon: const Icon(Icons.stop_circle_outlined, size: 14),
+                  label: const Text('Gỡ kẹt / Dừng', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  if (task.id != null) {
+                    await scheduleProvider.deleteTask(task.id!);
+                    if (rootContext.mounted) {
+                      AppToast.info(rootContext, 'Đã xóa công việc "${task.title}"');
+                    }
+                  }
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  backgroundColor: AppColors.danger.withValues(alpha: 0.06),
+                  side: BorderSide(color: AppColors.danger.withValues(alpha: 0.4)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                ),
+                icon: const Icon(Icons.delete_outline_rounded, size: 15, color: AppColors.danger),
+                label: const Text('Xóa', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTaskDetailDialog(BuildContext context, ScheduleTaskModel initialTask) {
     final serverProvider = context.read<ServerProvider>();
 
     showDialog(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (dialogCtx, setModalState) {
+      builder: (ctx) => Consumer<ScheduleProvider>(
+        builder: (dialogCtx, scheduleProvider, _) {
+          final task = scheduleProvider.getTaskById(initialTask.id) ?? initialTask;
           final isCompleted = task.status == 'completed';
           final isRunning = task.status == 'running';
+          final isQueued = scheduleProvider.isTaskQueuedForResource(task.id);
+          final isRetrying = task.status == 'retrying';
+          final hasResumeWork = (task.status == 'partial' || task.status == 'failed' || task.status == 'retrying' || task.status == 'cancelled') &&
+              task.hasCheckpointProgress;
 
           return TaduDialog(
-            minWidth: 500,
-            maxWidth: 580,
+            minWidth: 560,
+            maxWidth: 680,
             title: const Row(
               children: [
                 Icon(Icons.assignment_rounded, color: AppColors.primaryLight, size: 22),
@@ -1726,55 +2192,132 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ),
             content: _buildTaskCard(dialogCtx, task),
             leadingActions: [
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.danger),
-                tooltip: 'Xóa tác vụ',
-                onPressed: () async {
-                  if (task.id != null) {
-                    await scheduleProvider.deleteTask(task.id!);
-                    if (dialogCtx.mounted) {
-                      Navigator.pop(dialogCtx);
+              Tooltip(
+                message: 'Xóa tác vụ',
+                child: OutlinedButton(
+                  onPressed: () async {
+                    if (task.id != null) {
+                      await scheduleProvider.deleteTask(task.id!);
+                      if (dialogCtx.mounted) {
+                        Navigator.pop(dialogCtx);
+                      }
+                      if (context.mounted) {
+                        AppToast.info(context, 'Đã xóa tác vụ lịch trình');
+                      }
                     }
-                    if (context.mounted) {
-                      AppToast.info(context, 'Đã xóa tác vụ lịch trình');
-                    }
-                  }
-                },
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.danger,
+                    backgroundColor: AppColors.danger.withValues(alpha: 0.06),
+                    side: BorderSide(color: AppColors.danger.withValues(alpha: 0.4)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    minimumSize: const Size(40, 40),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded, size: 16, color: AppColors.danger),
+                ),
               ),
+              if (!isRunning)
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(dialogCtx);
+                    _showCreateTaskDialog(context, editingTask: task);
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textWhite,
+                    backgroundColor: AppColors.cardBg,
+                    side: const BorderSide(color: AppColors.borderLight),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  icon: const Icon(Icons.edit_outlined, size: 14, color: AppColors.primaryLight),
+                  label: const Text('Chỉnh sửa', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              if (isRunning || isRetrying)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await scheduleProvider.cancelOrResetStuckTask(task, resetToPending: false);
+                    if (context.mounted) {
+                      AppToast.warning(context, 'Đã dừng / gỡ kẹt tác vụ.');
+                    }
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.danger,
+                    backgroundColor: AppColors.danger.withValues(alpha: 0.08),
+                    side: BorderSide(color: AppColors.danger.withValues(alpha: 0.45)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  icon: const Icon(Icons.stop_circle_outlined, size: 14),
+                  label: const Text('Gỡ kẹt', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
             ],
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(dialogCtx),
                 child: const Text('Đóng', style: TextStyle(color: AppColors.textMuted)),
               ),
+              if (hasResumeWork && !isRunning)
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    AppToast.info(context, 'Đang chạy tiếp ${task.remainingIps.length} nhân vật chưa xong...');
+                    final res = await scheduleProvider.resumeTask(
+                      task,
+                      defaultServer: serverProvider.selectedServer,
+                    );
+                    if (context.mounted) {
+                      _showTaskOutcomeToast(context, res);
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: const Color(0xFF070B14),
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                  label: Text(
+                    'Chạy tiếp (${task.remainingIps.length})',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
               ElevatedButton.icon(
                 onPressed: isRunning
                     ? null
                     : () async {
-                        AppToast.info(context, 'Bắt đầu kích hoạt tác vụ cho các nhân vật...');
-                        await scheduleProvider.executeTaskNow(
-                          task,
-                          defaultServer: serverProvider.selectedServer,
-                        );
+                        AppToast.info(context, 'Bắt đầu thực thi tác vụ cho các nhân vật...');
+                        final res = (isCompleted || hasResumeWork)
+                            ? await scheduleProvider.restartTaskFromScratch(
+                                task,
+                                defaultServer: serverProvider.selectedServer,
+                              )
+                            : await scheduleProvider.executeTaskNow(
+                                task,
+                                defaultServer: serverProvider.selectedServer,
+                              );
                         if (context.mounted) {
-                          AppToast.success(context, 'Tác vụ đã hoàn tất thực thi');
+                          _showTaskOutcomeToast(context, res);
                         }
                       },
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: isCompleted ? AppColors.cardBg : AppColors.primary,
-                  foregroundColor: isCompleted ? AppColors.textWhite : const Color(0xFF070B14),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  backgroundColor: (isCompleted || hasResumeWork) ? AppColors.cardBg : AppColors.primary,
+                  foregroundColor: (isCompleted || hasResumeWork) ? AppColors.textWhite : const Color(0xFF070B14),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(4),
-                    side: isCompleted ? const BorderSide(color: AppColors.borderDark) : BorderSide.none,
+                    side: (isCompleted || hasResumeWork) ? const BorderSide(color: AppColors.borderLight) : BorderSide.none,
                   ),
                 ),
                 icon: isRunning
                     ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
-                    : Icon(isCompleted ? Icons.replay_rounded : Icons.play_arrow_rounded, size: 15),
+                    : Icon((isCompleted || hasResumeWork) ? Icons.replay_rounded : Icons.play_arrow_rounded, size: 15),
                 label: Text(
-                  isRunning ? 'Đang chạy...' : (isCompleted ? 'Chạy lại' : 'Kích hoạt ngay'),
-                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  isRunning
+                      ? (isQueued ? 'Đang xếp hàng...' : 'Đang chạy...')
+                      : ((isCompleted || hasResumeWork) ? 'Chạy lại' : 'Kích hoạt ngay'),
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -1866,7 +2409,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, fontFamily: 'monospace', color: AppColors.textWhite),
             ),
             const Spacer(),
-            _buildStatusBadge(task.status),
+            _buildStatusBadge(
+              task.status,
+              isQueued: context.read<ScheduleProvider>().isTaskQueuedForResource(task.id),
+            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -1926,7 +2472,40 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ],
 
         const SizedBox(height: 12),
-        // Danh sách avatar nhân vật thực hiện
+        // Tiến độ checkpoint & danh sách nhân vật (xanh = xong, đỏ = lỗi, xám = chờ)
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Tiến độ: ${task.completedIps.length}/${task.personaIps.length} nhân vật hoàn thành'
+              '${task.failedIps.isNotEmpty ? ' • ${task.failedIps.length} lỗi' : ''}',
+              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: AppColors.textMuted),
+            ),
+            if (task.retryCount > 0 || task.status == 'retrying')
+              Text(
+                'Thử lại: ${task.retryCount}/${task.maxRetries}'
+                '${task.nextRetryAt != null ? ' (lúc ${DateFormat('HH:mm').format(task.nextRetryAt!)})' : ''}',
+                style: const TextStyle(fontSize: 10.5, color: AppColors.warning, fontWeight: FontWeight.bold),
+              ),
+          ],
+        ),
+        if (task.personaIps.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: (task.completedIps.length / task.personaIps.length).clamp(0.0, 1.0),
+              minHeight: 5,
+              backgroundColor: AppColors.inputBg,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                isCompleted
+                    ? AppColors.accent
+                    : (task.status == 'failed' ? AppColors.danger : AppColors.warning),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 8),
         Row(
           children: [
             Text(
@@ -1944,12 +2523,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     final key = task.personaIps[pIdx];
                     final p = _personasMap[key] ?? _personasMap[key.split('##').first];
                     final initial = (p != null && p.name.isNotEmpty) ? p.name[0].toUpperCase() : '?';
+                    final isDoneP = task.completedIps.contains(key);
+                    final isFailP = task.failedIps.contains(key);
+                    final statusLabel = isDoneP ? 'Đã xong' : (isFailP ? 'Lỗi' : 'Chưa chạy');
+                    final badgeColor = isDoneP
+                        ? AppColors.accent
+                        : (isFailP ? AppColors.danger : AppColors.primaryLight);
                     return Tooltip(
-                      message: p != null ? '${p.name} (${p.ip})' : key,
+                      message: '${p != null ? '${p.name} (${p.ip})' : key} — $statusLabel',
                       child: CircleAvatar(
                         radius: 12,
-                        backgroundColor: AppColors.sidebarBg,
-                        child: Text(initial, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppColors.primaryLight)),
+                        backgroundColor: badgeColor.withValues(alpha: 0.2),
+                        child: Text(initial, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: badgeColor)),
                       ),
                     );
                   },
@@ -1965,15 +2550,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
             width: double.infinity,
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: (isCompleted ? AppColors.accent : AppColors.warning).withValues(alpha: 0.1),
+              color: (isCompleted
+                      ? AppColors.accent
+                      : (task.status == 'failed' ? AppColors.danger : AppColors.warning))
+                  .withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: (isCompleted ? AppColors.accent : AppColors.warning).withValues(alpha: 0.3)),
+              border: Border.all(
+                color: (isCompleted
+                        ? AppColors.accent
+                        : (task.status == 'failed' ? AppColors.danger : AppColors.warning))
+                    .withValues(alpha: 0.3),
+              ),
             ),
-            child: Text(
+            child: SelectableText(
               task.resultNote!,
               style: TextStyle(
                 fontSize: 11.5,
-                color: isCompleted ? AppColors.accent : AppColors.warning,
+                color: isCompleted
+                    ? AppColors.accent
+                    : (task.status == 'failed' ? AppColors.danger : AppColors.warning),
               ),
             ),
           ),
@@ -1982,15 +2577,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _buildStatusBadge(String status) {
+  Widget _buildStatusBadge(String status, {bool isQueued = false}) {
     Color bg = AppColors.bgDark;
     Color fg = AppColors.textMuted;
     String label = 'Đang chờ';
 
-    if (status == 'running') {
+    if (isQueued && status == 'running') {
+      bg = AppColors.accentCyan.withValues(alpha: 0.16);
+      fg = AppColors.accentCyan;
+      label = 'Đang xếp hàng';
+    } else if (status == 'running') {
       bg = AppColors.primary.withValues(alpha: 0.2);
       fg = AppColors.primaryLight;
       label = 'Đang chạy';
+    } else if (status == 'retrying') {
+      bg = AppColors.warning.withValues(alpha: 0.18);
+      fg = AppColors.warning;
+      label = 'Chờ thử lại';
+    } else if (status == 'partial') {
+      bg = AppColors.warning.withValues(alpha: 0.18);
+      fg = AppColors.warning;
+      label = 'Xong 1 phần';
     } else if (status == 'completed') {
       bg = AppColors.accent.withValues(alpha: 0.15);
       fg = AppColors.accent;
@@ -1999,6 +2606,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
       bg = AppColors.danger.withValues(alpha: 0.15);
       fg = AppColors.danger;
       label = 'Thất bại';
+    } else if (status == 'cancelled') {
+      bg = AppColors.textDim.withValues(alpha: 0.15);
+      fg = AppColors.textDim;
+      label = 'Đã hủy';
     }
 
     return Container(

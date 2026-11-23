@@ -14,6 +14,25 @@ import 'local_config_service.dart';
 import 'persona_service.dart';
 import 'socks5_proxy_service.dart';
 
+class AiTaskExecutionResult {
+  /// 'completed' | 'failed' | 'incomplete' | 'error' | 'cancelled' | 'chat'
+  final String outcome;
+  final String reply;
+  final String? evidence;
+  final String? failureReason;
+  final List<ToolExecutionItem> executedTools;
+
+  const AiTaskExecutionResult({
+    required this.outcome,
+    required this.reply,
+    this.evidence,
+    this.failureReason,
+    this.executedTools = const [],
+  });
+
+  bool get isCompleted => outcome == 'completed';
+}
+
 class NativeAiService {
   static final NativeAiService _instance = NativeAiService._internal();
   factory NativeAiService() => _instance;
@@ -76,6 +95,117 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
    - Chỉ khi đã kiểm chứng kết quả thực tế mới gọi `report_task_result(status="completed", evidence=...)`. Nếu đã thử mọi cách mà vẫn bất khả thi mới gọi `report_task_result(status="failed", failure_reason=...)` - hệ thống sẽ tự gửi cảnh báo Email/tin nhắn cho chủ máy.
    - Mọi lượt có thao tác thực tế đều PHẢI kết thúc bằng `report_task_result`. Nếu dừng mà không gọi, hệ thống giám sát sẽ buộc bạn làm tiếp.''';
 
+  /// Thực thi một tác vụ tự động hóa hoàn chỉnh bằng AI Agent (hỗ trợ cả Proxy LLM lẫn Local CLI Agent)
+  /// và trả về kết quả có cấu trúc (`AiTaskExecutionResult`) phục vụ bộ lập lịch hẹn giờ (`ScheduleProvider`).
+  /// Mặc định không ghi đè lịch sử chat UI (`persistToChatDb: false`) và không gửi cảnh báo trùng
+  /// (`suppressFailureNotification: true`, để bộ lập lịch chủ động retry và gửi cảnh báo tổng hợp).
+  Future<AiTaskExecutionResult> runAutomatedTask({
+    required String sessionId,
+    required String prompt,
+    String? model,
+    String? workingDir,
+    bool persistToChatDb = false,
+    bool suppressFailureNotification = true,
+    int? maxTurnsOverride,
+    int? maxNudgesOverride,
+    void Function(String status)? onStatus,
+    void Function(ToolExecutionItem tool)? onTool,
+    bool Function()? isCancelled,
+  }) async {
+    if (isCancelled?.call() == true) {
+      return const AiTaskExecutionResult(
+        outcome: 'cancelled',
+        reply: 'Tác vụ đã bị hủy trước khi khởi chạy.',
+        failureReason: 'Đã bị hủy bởi người dùng',
+      );
+    }
+
+    final completer = Completer<AiTaskExecutionResult>();
+    final executedTools = <ToolExecutionItem>[];
+    AiTaskExecutionResult? structuredResult;
+    StreamSubscription<String>? sub;
+    Timer? cancelPoller;
+
+    void finish(AiTaskExecutionResult res) {
+      cancelPoller?.cancel();
+      if (!completer.isCompleted) {
+        completer.complete(res);
+      }
+    }
+
+    void checkCancel() {
+      if (isCancelled?.call() == true && !completer.isCompleted) {
+        sub?.cancel();
+        finish(AiTaskExecutionResult(
+          outcome: 'cancelled',
+          reply: 'Tác vụ đã bị hủy giữa chừng.',
+          failureReason: 'Đã bị hủy bởi người dùng',
+          executedTools: List<ToolExecutionItem>.from(executedTools),
+        ));
+      }
+    }
+
+    if (isCancelled != null) {
+      cancelPoller = Timer.periodic(const Duration(milliseconds: 500), (_) => checkCancel());
+    }
+
+    sub = streamChatMessage(
+      sessionId: sessionId,
+      message: prompt,
+      model: model,
+      history: const [],
+      workingDir: workingDir,
+      persistToChatDb: persistToChatDb,
+      suppressFailureNotification: suppressFailureNotification,
+      maxTurnsOverride: maxTurnsOverride,
+      maxNudgesOverride: maxNudgesOverride,
+      onToken: (_) => checkCancel(),
+      onStatus: (status) {
+        checkCancel();
+        if (!completer.isCompleted) {
+          onStatus?.call(status);
+        }
+      },
+      onTool: (tool) {
+        checkCancel();
+        executedTools.add(tool);
+        if (!completer.isCompleted) {
+          onTool?.call(tool);
+        }
+      },
+      onResult: (res) {
+        structuredResult = res;
+      },
+      onDone: (fullReply) {
+        finish(
+          structuredResult ??
+              AiTaskExecutionResult(
+                outcome: 'incomplete',
+                reply: fullReply,
+                failureReason: 'AI Agent kết thúc mà không trả về trạng thái xác nhận hoàn thành.',
+                executedTools: List<ToolExecutionItem>.from(executedTools),
+              ),
+        );
+      },
+      onError: (err) {
+        finish(
+          structuredResult ??
+              AiTaskExecutionResult(
+                outcome: 'error',
+                reply: err.toString(),
+                failureReason: err.toString(),
+                executedTools: List<ToolExecutionItem>.from(executedTools),
+              ),
+        );
+      },
+    );
+
+    final result = await completer.future;
+    cancelPoller?.cancel();
+    await sub.cancel();
+    return result;
+  }
+
   StreamSubscription<String> streamChatMessage({
     required String sessionId,
     required String message,
@@ -83,6 +213,11 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     List<AttachmentItem>? attachments,
     List<Map<String, dynamic>>? history,
     String? workingDir,
+    bool persistToChatDb = true,
+    bool suppressFailureNotification = false,
+    void Function(AiTaskExecutionResult result)? onResult,
+    int? maxTurnsOverride,
+    int? maxNudgesOverride,
     required void Function(String token) onToken,
     required void Function(String status) onStatus,
     required void Function(ToolExecutionItem tool) onTool,
@@ -99,15 +234,17 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         final targetModel = (model != null && model.isNotEmpty) ? model : defaultModel;
 
         // Save user message to database
-        final userMsg = ChatMessageModel(
-          sessionId: sessionId,
-          role: 'user',
-          content: message,
-          model: targetModel,
-          attachments: attachments,
-          createdAt: DateTime.now(),
-        );
-        await _dbService.insertMessage(userMsg);
+        if (persistToChatDb) {
+          final userMsg = ChatMessageModel(
+            sessionId: sessionId,
+            role: 'user',
+            content: message,
+            model: targetModel,
+            attachments: attachments,
+            createdAt: DateTime.now(),
+          );
+          await _dbService.insertMessage(userMsg);
+        }
 
         final aiEngineType = cfg['ai_engine_type']?.toString() ?? 'proxy';
         final activeCliAgent = cfg['active_cli_agent']?.toString() ?? 'antigravity-cli';
@@ -136,18 +273,22 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
             sessionId: sessionId,
             maxAttempts: (int.tryParse('${cfg['agent_cli_max_attempts'] ?? ''}') ?? 3).clamp(1, 10),
             workingDir: workingDir,
+            suppressFailureNotification: suppressFailureNotification,
+            onResult: onResult,
             onToken: onToken,
             onStatus: onStatus,
             onTool: onTool,
             onDone: (reply) async {
-              final assistantMsg = ChatMessageModel(
-                sessionId: sessionId,
-                role: 'assistant',
-                content: reply,
-                model: chosenCli,
-                createdAt: DateTime.now(),
-              );
-              await _dbService.insertMessage(assistantMsg);
+              if (persistToChatDb) {
+                final assistantMsg = ChatMessageModel(
+                  sessionId: sessionId,
+                  role: 'assistant',
+                  content: reply,
+                  model: chosenCli,
+                  createdAt: DateTime.now(),
+                );
+                await _dbService.insertMessage(assistantMsg);
+              }
               onDone(reply);
             },
             onError: onError,
@@ -158,7 +299,13 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
 
         var baseUrl = cfg['proxy_base_url']?.toString() ?? 'https://api.mitom.ai/v1';
         if (!LocalConfigService.isValidMitomProxyUrl(baseUrl)) {
-          onError('Cấu hình Proxy Base URL không hợp lệ. Chỉ chấp nhận domain thuộc *.mitom.ai');
+          const invalidMsg = 'Cấu hình Proxy Base URL không hợp lệ. Chỉ chấp nhận domain thuộc *.mitom.ai';
+          onResult?.call(const AiTaskExecutionResult(
+            outcome: 'error',
+            reply: invalidMsg,
+            failureReason: invalidMsg,
+          ));
+          onError(invalidMsg);
           return;
         }
         final apiKey = cfg['proxy_api_key']?.toString() ?? '';
@@ -712,8 +859,8 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         final streamedBuffer = StringBuffer();
         final allExecutedTools = <ToolExecutionItem>[];
         int turnCount = 0;
-        final maxTurns = (int.tryParse('${cfg['agent_max_turns'] ?? ''}') ?? 80).clamp(10, 400);
-        final maxNudges = (int.tryParse('${cfg['agent_max_continue_nudges'] ?? ''}') ?? 6).clamp(1, 30);
+        final maxTurns = (maxTurnsOverride ?? (int.tryParse('${cfg['agent_max_turns'] ?? ''}') ?? 80)).clamp(10, 400);
+        final maxNudges = (maxNudgesOverride ?? (int.tryParse('${cfg['agent_max_continue_nudges'] ?? ''}') ?? 6)).clamp(1, 30);
         int nudges = 0;
         int failureChallenges = 0;
         Map<String, String>? taskReport;
@@ -1334,22 +1481,33 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
                         await Future.delayed(const Duration(milliseconds: 600));
 
                         final textToInput = (cText != null && cText.isNotEmpty) ? cText : 'Video hay quá bạn ơi!';
-                        // Dùng am broadcast hoặc input text an toàn
-                        final encodedBase64 = base64Encode(utf8.encode(textToInput));
-                        await Process.run(adbExe, [
-                          '-s', serial, 'shell',
-                          'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', encodedBase64
-                        ]);
-                        // Fallback gõ trực tiếp qua ADB nếu thiết bị chưa cài ADB Keyboard
-                        final escaped = textToInput.replaceAll(' ', '%s').replaceAll("'", "\\'");
-                        await Process.run(adbExe, ['-s', serial, 'shell', 'input', 'text', escaped]);
+                        // Kiểm tra xem thiết bị có đang dùng ADB Keyboard hay không để tránh gõ trùng 2 lần
+                        bool usesAdbKeyboard = false;
+                        try {
+                          final imeRes = await Process.run(adbExe, [
+                            '-s', serial, 'shell', 'settings', 'get', 'secure', 'default_input_method',
+                          ]);
+                          usesAdbKeyboard = imeRes.stdout.toString().toLowerCase().contains('adbkeyboard');
+                        } catch (_) {}
+
+                        if (usesAdbKeyboard) {
+                          final encodedBase64 = base64Encode(utf8.encode(textToInput));
+                          await Process.run(adbExe, [
+                            '-s', serial, 'shell',
+                            'am', 'broadcast', '-a', 'ADB_INPUT_B64', '--es', 'msg', encodedBase64
+                          ]);
+                        } else {
+                          // Fallback gõ trực tiếp qua ADB nếu thiết bị chưa kích hoạt ADB Keyboard
+                          final escaped = textToInput.replaceAll(' ', '%s').replaceAll("'", "\\'");
+                          await Process.run(adbExe, ['-s', serial, 'shell', 'input', 'text', escaped]);
+                        }
 
                         await Future.delayed(const Duration(milliseconds: 500));
                         // Bấm phím Enter hoặc nút Send
                         await Process.run(adbExe, ['-s', serial, 'shell', 'input', 'keyevent', '66']);
                       }
 
-                      results.add('$pName ($targetIp): Đã bấm $actType siêu tốc (Tọa độ: $finalX, $finalY - Màn hình ${screenWidth}x$screenHeight)');
+                      results.add('$pName ($targetIp): Đã thực hiện thao tác $actType (Tọa độ: $finalX, $finalY - Màn hình ${screenWidth}x$screenHeight). Hãy kiểm chứng lại trên màn hình bằng uiautomator dump trước khi xác nhận hoàn thành 100%.');
                     }
 
                     toolOutput = results.join('\n');
@@ -1592,63 +1750,84 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         }
 
         // ===== GIÁM SÁT HOÀN THÀNH 100% & CẢNH BÁO KHI KHÔNG HOÀN THÀNH =====
+        String finalOutcome = 'chat';
+        String? finalFailureReason;
         if (!isCancelled) {
-          String outcome = 'chat';
-          String? failureReason;
           if (fatalError != null) {
-            outcome = 'error';
-            failureReason = fatalError;
+            finalOutcome = 'error';
+            finalFailureReason = fatalError;
           } else if (taskReport?['status'] == 'completed') {
-            outcome = 'completed';
+            finalOutcome = 'completed';
           } else if (taskReport?['status'] == 'failed') {
-            outcome = 'failed';
-            failureReason = taskReport!['reason'];
+            finalOutcome = 'failed';
+            finalFailureReason = taskReport!['reason'];
           } else if (actionToolUsed || looksActionable) {
-            outcome = 'incomplete';
-            failureReason = turnCount >= maxTurns
+            finalOutcome = 'incomplete';
+            finalFailureReason = turnCount >= maxTurns
                 ? 'Đã chạy hết giới hạn $maxTurns bước mà Agent vẫn chưa xác nhận hoàn thành.'
                 : 'Agent dừng lại mà không xác nhận hoàn thành dù đã bị buộc tiếp tục $nudges lần.';
           }
           final monitorText = await _finalizeMonitoring(
-            outcome: outcome,
-            failureReason: failureReason,
+            outcome: finalOutcome,
+            failureReason: finalFailureReason,
             taskReport: taskReport,
             userRequest: message,
             sessionId: sessionId,
             engine: targetModel,
             scopeKeys: allowedScopeIps,
             executedTools: allExecutedTools,
+            suppressFailureNotification: suppressFailureNotification,
             onStatus: onStatus,
           );
           if (monitorText.isNotEmpty) {
             finalReply = '$finalReply$monitorText';
             onToken(monitorText);
           }
+        } else {
+          finalOutcome = 'cancelled';
+          finalFailureReason = 'Đã bị hủy giữa chừng';
         }
 
         // Save assistant message to Database
-        final assistantMsg = ChatMessageModel(
-          sessionId: sessionId,
-          role: 'assistant',
-          content: finalReply,
-          model: targetModel,
-          toolExecutions: allExecutedTools,
-          createdAt: DateTime.now(),
-        );
-        await _dbService.insertMessage(assistantMsg);
+        if (persistToChatDb) {
+          final assistantMsg = ChatMessageModel(
+            sessionId: sessionId,
+            role: 'assistant',
+            content: finalReply,
+            model: targetModel,
+            toolExecutions: allExecutedTools,
+            createdAt: DateTime.now(),
+          );
+          await _dbService.insertMessage(assistantMsg);
+        }
+        onResult?.call(AiTaskExecutionResult(
+          outcome: finalOutcome,
+          reply: finalReply,
+          evidence: taskReport?['evidence'],
+          failureReason: finalFailureReason,
+          executedTools: List<ToolExecutionItem>.from(allExecutedTools),
+        ));
         onDone(finalReply);
       } catch (e) {
         if (!isCancelled) {
-          unawaited(TaskNotificationService()
-              .notifyTaskFailure(
-                userRequest: message,
-                reason: 'Lỗi xử lý AI: $e',
-                outcome: 'error',
-                sessionId: sessionId,
-                engine: model,
-              )
-              .catchError((_) => const TaskNotificationResult(delivered: [], errors: {})));
-          onError('Lỗi xử lý AI: $e');
+          if (!suppressFailureNotification) {
+            unawaited(TaskNotificationService()
+                .notifyTaskFailure(
+                  userRequest: message,
+                  reason: 'Lỗi xử lý AI: $e',
+                  outcome: 'error',
+                  sessionId: sessionId,
+                  engine: model,
+                )
+                .catchError((_) => const TaskNotificationResult(delivered: [], errors: {})));
+          }
+          final errMsg = 'Lỗi xử lý AI: $e';
+          onResult?.call(AiTaskExecutionResult(
+            outcome: 'error',
+            reply: errMsg,
+            failureReason: errMsg,
+          ));
+          onError(errMsg);
         }
       }
     }();
@@ -1988,12 +2167,21 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     List<String> scopeKeys = const [],
     List<ToolExecutionItem> executedTools = const [],
     List<String> extraSteps = const [],
+    bool suppressFailureNotification = false,
     required void Function(String status) onStatus,
   }) async {
     if (outcome == 'chat') return '';
     if (outcome == 'completed') {
       final ev = taskReport?['evidence'] ?? '';
       return '\n\n---\n**Giám sát tác vụ: ĐÃ HOÀN THÀNH 100%**${ev.isNotEmpty ? '\n- Bằng chứng: $ev' : ''}';
+    }
+
+    final label = outcome == 'failed'
+        ? 'KHÔNG THỂ HOÀN THÀNH'
+        : (outcome == 'error' ? 'LỖI HỆ THỐNG - CHƯA HOÀN THÀNH' : 'CHƯA HOÀN THÀNH');
+    if (suppressFailureNotification) {
+      return '\n\n---\n**Giám sát tác vụ: $label**\n'
+          '- Lý do: ${failureReason ?? 'Không rõ'}';
     }
 
     onStatus('Tác vụ chưa hoàn thành, đang gửi cảnh báo cho chủ máy...');
@@ -2016,9 +2204,6 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
         recentSteps: steps,
       );
     } catch (_) {}
-    final label = outcome == 'failed'
-        ? 'KHÔNG THỂ HOÀN THÀNH'
-        : (outcome == 'error' ? 'LỖI HỆ THỐNG - CHƯA HOÀN THÀNH' : 'CHƯA HOÀN THÀNH');
     return '\n\n---\n**Giám sát tác vụ: $label**\n'
         '- Lý do: ${failureReason ?? 'Không rõ'}\n'
         '- Cảnh báo: ${res?.describe() ?? 'Gửi cảnh báo thất bại'}';
@@ -2032,14 +2217,20 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
   static String _tail(String s, int max) => s.length <= max ? s : s.substring(s.length - max);
 
   /// Phân tích dòng trạng thái hoàn thành của Local CLI Agent.
-  /// Trả về status = 'completed' | 'failed' | null (không có dòng trạng thái) và lý do nếu thất bại.
-  static ({String? status, String? reason}) parseCliTaskStatus(String output) {
+  /// Trả về status = 'completed' | 'failed' | null, kèm reason (khi failed) hoặc evidence (khi completed có ghi chú).
+  static ({String? status, String? reason, String? evidence}) parseCliTaskStatus(String output) {
     final matches = _cliStatusRegex.allMatches(output).toList();
-    if (matches.isEmpty) return (status: null, reason: null);
+    if (matches.isEmpty) return (status: null, reason: null, evidence: null);
     final m = matches.last;
-    if (m.group(1)!.toUpperCase() == 'COMPLETED') return (status: 'completed', reason: null);
-    final r = (m.group(2) ?? '').trim();
-    return (status: 'failed', reason: r.isNotEmpty ? r : 'Agent báo thất bại nhưng không nêu lý do');
+    final detail = (m.group(2) ?? '').trim();
+    if (m.group(1)!.toUpperCase() == 'COMPLETED') {
+      return (status: 'completed', reason: null, evidence: detail.isNotEmpty ? detail : null);
+    }
+    return (
+      status: 'failed',
+      reason: detail.isNotEmpty ? detail : 'Agent báo thất bại nhưng không nêu lý do',
+      evidence: null,
+    );
   }
 
   /// Kiểm tra yêu cầu có chứa thao tác cần giám sát hoàn thành hay không
@@ -2054,6 +2245,8 @@ CÁC NGUYÊN TẮC HOẠT ĐỘNG:
     String? workingDir,
     String? sessionId,
     int maxAttempts = 3,
+    bool suppressFailureNotification = false,
+    void Function(AiTaskExecutionResult result)? onResult,
     required void Function(String token) onToken,
     required void Function(String status) onStatus,
     required void Function(ToolExecutionItem tool) onTool,
@@ -2088,43 +2281,54 @@ $prompt
 
 === HỢP ĐỒNG HOÀN THÀNH 100% (BẮT BUỘC) ===
 - Phải thực hiện TRỌN VẸN mọi bước của yêu cầu trên bằng lệnh terminal thực tế, không dừng giữa chừng, không chỉ mô tả kế hoạch, không hỏi lại người dùng.
-- Sau mỗi bước quan trọng phải tự kiểm chứng trạng thái thực tế (ví dụ đọc lại trang qua DevTools, chụp màn hình, dump UI thiết bị).
+- TUYỆT ĐỐI KHÔNG báo COMPLETED chỉ vì đã mở được app/link hay gửi lệnh chạm mù. Sau khi thao tác PHẢI kiểm chứng lại trạng thái thật trên màn hình (`mxh-tool ui-dump`, `mxh-tool adb-screenshot`, hoặc đọc lại DOM qua DevTools).
 - Dòng CUỐI CÙNG của câu trả lời BẮT BUỘC là đúng một trong hai dạng:
-  MXH_TASK_STATUS: COMPLETED
+  MXH_TASK_STATUS: COMPLETED: <bằng chứng cụ thể đã đọc/thấy sau khi kiểm chứng>
   MXH_TASK_STATUS: FAILED: <lý do cụ thể không thể hoàn thành>
 - Chỉ ghi COMPLETED khi đã kiểm chứng xong 100%. Nếu thiếu dòng này, hệ thống coi là CHƯA HOÀN THÀNH và sẽ buộc chạy tiếp; hết lượt sẽ gửi cảnh báo cho chủ máy.
 
 (Yêu cầu thực thi: Nếu người dùng yêu cầu mở/đóng trình duyệt, xem link hay auto thiết bị, hãy sử dụng lệnh terminal được cấp ở trên để thực thi ngay lập tức. Tuyệt đối không dùng emoji hay icon trong câu trả lời, trình bày kết quả rõ ràng)''';
 
-      // Augmented PATH environment so subprocesses (mxh-tool, node, git, etc.) are always found
+      // Augmented PATH environment so subprocesses (mxh-tool, adb, node, git, etc.) are always found
       final env = Map<String, String>.from(Platform.environment);
-      final home = Platform.environment['HOME'] ?? '';
-      final currentPath = env['PATH'] ?? '';
+      final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+      final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
+      final pathSep = Platform.isWindows ? ';' : ':';
+      final pathKey = Platform.isWindows && env.containsKey('Path') && !env.containsKey('PATH') ? 'Path' : 'PATH';
+      final currentPath = env[pathKey] ?? '';
+      final resolvedAdbPath = await _adbManagerService.resolveAdbPath();
+      final adbDir = File(resolvedAdbPath).parent.path;
       final extraPaths = <String>[
-        '$home/.agent_mxh_auto/bin',
-        '$home/.tadu_ai_agent/bin',
-        '$home/.local/bin',
-        '$home/bin',
-        '/usr/local/bin',
-        '/snap/bin',
+        if (home.isNotEmpty) '$home${Platform.pathSeparator}.agent_mxh_auto${Platform.pathSeparator}bin',
+        if (home.isNotEmpty) '$home${Platform.pathSeparator}.tadu_ai_agent${Platform.pathSeparator}bin',
+        if (adbDir.isNotEmpty && adbDir != '.') adbDir,
+        if (Platform.isWindows && localAppData.isNotEmpty) '$localAppData\\Android\\Sdk\\platform-tools',
+        if (home.isNotEmpty) '$home${Platform.pathSeparator}Android${Platform.pathSeparator}Sdk${Platform.pathSeparator}platform-tools',
+        if (!Platform.isWindows && home.isNotEmpty) '$home/.local/bin',
+        if (!Platform.isWindows && home.isNotEmpty) '$home/bin',
+        if (!Platform.isWindows) '/usr/local/bin',
+        if (!Platform.isWindows) '/snap/bin',
       ];
-      final nvmDir = Directory('$home/.nvm/versions/node');
-      if (nvmDir.existsSync()) {
-        try {
-          for (final dir in nvmDir.listSync()) {
-            final binPath = '${dir.path}/bin';
-            if (Directory(binPath).existsSync()) {
-              extraPaths.add(binPath);
+      if (!Platform.isWindows && home.isNotEmpty) {
+        final nvmDir = Directory('$home/.nvm/versions/node');
+        if (nvmDir.existsSync()) {
+          try {
+            for (final dir in nvmDir.listSync()) {
+              final binPath = '${dir.path}/bin';
+              if (Directory(binPath).existsSync()) {
+                extraPaths.add(binPath);
+              }
             }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
-      env['PATH'] = '${extraPaths.join(':')}:$currentPath';
+      env[pathKey] = '${extraPaths.join(pathSep)}$pathSep$currentPath';
 
       final allOutputs = StringBuffer();
       String lastOutput = '';
       String? status;
       String? reason;
+      String? evidence;
       String? lastProcessError;
       int failureChallenges = 0;
 
@@ -2167,6 +2371,7 @@ $directive Kiểm tra trạng thái thực tế hiện tại, làm NỐT các b�
           if (parsed.status == 'completed') {
             status = 'completed';
             reason = null;
+            evidence = parsed.evidence;
             break;
           }
           reason = parsed.reason;
@@ -2206,29 +2411,46 @@ $directive Kiểm tra trạng thái thực tế hiện tại, làm NỐT các b�
       final monitor = await _finalizeMonitoring(
         outcome: outcome,
         failureReason: failureReason,
+        taskReport: evidence != null ? {'status': 'completed', 'evidence': evidence} : null,
         userRequest: prompt,
         sessionId: sessionId,
         engine: cliName,
         scopeKeys: scopeKeys,
         extraSteps: lastOutput.trim().isEmpty ? const [] : ['Đầu ra cuối của CLI: ${_tail(lastOutput.trim(), 600)}'],
+        suppressFailureNotification: suppressFailureNotification,
         onStatus: onStatus,
       );
       if (monitor.isNotEmpty) onToken(monitor);
       final base = cleaned.isNotEmpty ? cleaned : 'Đã chạy tác vụ với $cliName.';
-      onDone('$base$monitor');
+      final fullText = '$base$monitor';
+      onResult?.call(AiTaskExecutionResult(
+        outcome: outcome,
+        reply: fullText,
+        evidence: outcome == 'completed' ? (evidence ?? _tail(base, 300)) : null,
+        failureReason: failureReason,
+      ));
+      onDone(fullText);
     } catch (e) {
       if (isCancelled()) return;
-      try {
-        await TaskNotificationService().notifyTaskFailure(
-          userRequest: prompt,
-          reason: 'Không thể chạy CLI $cliName: $e',
-          outcome: 'error',
-          sessionId: sessionId,
-          engine: cliName,
-          personas: scopeKeys,
-        );
-      } catch (_) {}
-      onError('Không thể chạy CLI $cliName: $e. Hãy kiểm tra đường dẫn hoặc quyền thực thi. Đã gửi cảnh báo cho chủ máy.');
+      if (!suppressFailureNotification) {
+        try {
+          await TaskNotificationService().notifyTaskFailure(
+            userRequest: prompt,
+            reason: 'Không thể chạy CLI $cliName: $e',
+            outcome: 'error',
+            sessionId: sessionId,
+            engine: cliName,
+            personas: scopeKeys,
+          );
+        } catch (_) {}
+      }
+      final errMsg = 'Không thể chạy CLI $cliName: $e. Hãy kiểm tra đường dẫn hoặc quyền thực thi.';
+      onResult?.call(AiTaskExecutionResult(
+        outcome: 'error',
+        reply: errMsg,
+        failureReason: errMsg,
+      ));
+      onError(suppressFailureNotification ? errMsg : '$errMsg Đã gửi cảnh báo cho chủ máy.');
     }
   }
 
@@ -2268,6 +2490,15 @@ $directive Kiểm tra trạng thái thực tế hiện tại, làm NỐT các b�
     try {
       await process.stdin.close();
     } catch (_) {}
+
+    final cancelWatcher = Timer.periodic(const Duration(milliseconds: 500), (t) {
+      if (isCancelled()) {
+        t.cancel();
+        try {
+          process.kill();
+        } catch (_) {}
+      }
+    });
 
     final fullOutput = StringBuffer();
     final errOutput = StringBuffer();
@@ -2370,6 +2601,7 @@ $directive Kiểm tra trạng thái thực tế hiện tại, làm NỐT các b�
     );
 
     final exitCode = await process.exitCode;
+    cancelWatcher.cancel();
     try {
       await Future.wait([stdoutDone.future, stderrDone.future]).timeout(const Duration(seconds: 5));
     } catch (_) {}

@@ -203,13 +203,19 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
         task_type TEXT NOT NULL,
-        execution_mode TEXT DEFAULT 'browser',
+        execution_mode TEXT DEFAULT 'device',
         target_url TEXT NOT NULL,
         comment_content TEXT,
         persona_ips TEXT NOT NULL,
+        completed_ips TEXT DEFAULT '',
+        failed_ips TEXT DEFAULT '',
         scheduled_time TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
         result_note TEXT,
+        retry_count INTEGER DEFAULT 0,
+        max_retries INTEGER DEFAULT 3,
+        next_retry_at TEXT,
+        started_at TEXT,
         completed_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -217,7 +223,25 @@ class DatabaseService {
 
     // Migration: Thêm cột nếu bảng cũ chưa có
     try {
-      await _db!.execute("ALTER TABLE schedule_tasks ADD COLUMN execution_mode TEXT DEFAULT 'browser'");
+      await _db!.execute("ALTER TABLE schedule_tasks ADD COLUMN execution_mode TEXT DEFAULT 'device'");
+    } catch (_) {}
+    try {
+      await _db!.execute("ALTER TABLE schedule_tasks ADD COLUMN completed_ips TEXT DEFAULT ''");
+    } catch (_) {}
+    try {
+      await _db!.execute("ALTER TABLE schedule_tasks ADD COLUMN failed_ips TEXT DEFAULT ''");
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE schedule_tasks ADD COLUMN retry_count INTEGER DEFAULT 0');
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE schedule_tasks ADD COLUMN max_retries INTEGER DEFAULT 3');
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE schedule_tasks ADD COLUMN next_retry_at TEXT');
+    } catch (_) {}
+    try {
+      await _db!.execute('ALTER TABLE schedule_tasks ADD COLUMN started_at TEXT');
     } catch (_) {}
     try {
       await _db!.execute('ALTER TABLE persona_profiles ADD COLUMN external_device_address TEXT');
@@ -961,12 +985,19 @@ class DatabaseService {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT NOT NULL,
           task_type TEXT NOT NULL,
+          execution_mode TEXT DEFAULT 'device',
           target_url TEXT NOT NULL,
           comment_content TEXT,
           persona_ips TEXT NOT NULL,
+          completed_ips TEXT DEFAULT '',
+          failed_ips TEXT DEFAULT '',
           scheduled_time TEXT NOT NULL,
           status TEXT DEFAULT 'pending',
           result_note TEXT,
+          retry_count INTEGER DEFAULT 0,
+          max_retries INTEGER DEFAULT 3,
+          next_retry_at TEXT,
+          started_at TEXT,
           completed_at TEXT,
           created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
