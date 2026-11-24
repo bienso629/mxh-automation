@@ -16,9 +16,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-echo "=== Building Flutter macOS Release ==="
+echo "=== Building Flutter macOS Release (Obfuscated) ==="
 cd "$PROJECT_DIR"
-flutter build macos --release
+flutter build macos --release --obfuscate --split-debug-info=build/symbols/macos
 
 echo "=== Packaging macOS App Bundle ==="
 cd "$PROJECT_DIR/build/macos/Build/Products/Release"

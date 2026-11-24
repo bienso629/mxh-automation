@@ -79,10 +79,11 @@ jobs:
         run: |
           flutter pub get
 
-      - name: Build macOS Archive
+      - name: Build macOS Archive (Obfuscated Release)
         run: |
           BUILD_NUM=${GITHUB_RUN_NUMBER:-1}
-          flutter build macos --release --config-only --build-name=1.0.0 --build-number=$BUILD_NUM || true
+          rm -rf build/symbols/macos
+          flutter build macos --release --config-only --obfuscate --split-debug-info=build/symbols/macos --build-name=1.0.0 --build-number=$BUILD_NUM || true
           xcodebuild -workspace macos/Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \

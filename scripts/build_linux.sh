@@ -12,8 +12,8 @@ echo "========================================================"
 cd "$APP_DIR"
 
 if [ ! -f "$APP_DIR/build/linux/x64/release/bundle/agent_mxh_auto" ]; then
-    echo "[1/4] Dang bien dich Flutter Linux Release..."
-    flutter build linux --release
+    echo "[1/4] Dang bien dich Flutter Linux Release (Obfuscated)..."
+    flutter build linux --release --obfuscate --split-debug-info=build/symbols/linux
 else
     echo "[1/4] Da co san ban bien dich Flutter Linux Release."
 fi

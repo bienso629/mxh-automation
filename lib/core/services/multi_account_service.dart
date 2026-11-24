@@ -77,7 +77,7 @@ class MultiAccountService {
 
   static const String _keyAccounts = 'ai_type_multi_accounts';
   static const String _keyActiveAccountId = 'ai_type_active_account_id';
-  static const String _multiAccountSecret = 'ai_type_secret_key_2026_!@#';
+  static String get _multiAccountSecret => CryptoHelper.multiAccountSecret;
 
   SharedPreferences? _prefs;
 
